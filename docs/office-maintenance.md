@@ -26,6 +26,7 @@
 ## 当前扩展
 
 - [Telegram 本人私聊通道](telegram-plugin.md)：卡片发送、原消息更新、本人按钮回答及文字回复。
+- [agy 后台 Agent](agy-plugin.md)：Antigravity CLI 单次执行、指定会话续接和当前步骤用量。
 - [插件源码](../plugins/telegram/channel.ts) 和 [专项测试](../tests/telegram.test.ts) 与官方内核保持分离，没有新增运行时依赖。
 
 本机插件可安装在 `~/.agent-autoloop/plugins/telegram/channel.ts`；官方 app 位于另一个子目录。插件源码的更新、配置变更和官方程序升级分别验收。
