@@ -1,5 +1,9 @@
 # 给改这个仓库的 Agent
 
+## 本 Fork 的维护范围
+
+自有修改只提交到 `zhjnerv/agent-autoloop`，不向官方 `KKKKhazix/agent-autoloop` 推送、创建 PR 或发送评论。`main` 跟随官方；`office` 保存本 Fork 的扩展。运行实例的升级是独立操作，不随源码同步自动执行。具体见 [Fork 维护说明](docs/office-maintenance.md)。
+
 先读 [docs/protocol.md](docs/protocol.md) 和 [架构图](docs/architecture.svg)：它们说明最终实现。
 
 ## 原则
