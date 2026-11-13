@@ -7,7 +7,7 @@ import { hubClient, type Hub } from "../protocol/client.ts";
 const positive = { type: "integer", minimum: 1 };
 const string = { type: "string", minLength: 1 };
 const specs = [
-  ["status", "查看现在的事项和卡片", {}, []],
+  ["status", "查看现在的事项和卡片；before 写上一页的 nextBefore，往前翻更早的轮次", { before: positive }, []],
   ["why", "查看一轮的事件、规则和结果", { run: positive }, ["run"]],
   [
     "answer",
@@ -24,6 +24,20 @@ const specs = [
     ["id", "type"],
   ],
   ["tell", "用本机来源发送通知；相同编号只发一次", { key: string, text: string }, ["key", "text"]],
+  [
+    "pause",
+    "暂停一条规则：到点不跑、来事件不接也不排队；跳过的事件不会自动补，手动恢复时会列出，之后可以 replay",
+    { rule: string, reason: string, until: string },
+    ["rule"],
+  ],
+  ["resume", "恢复一条暂停的规则，结果里列出暂停期间跳过的事件（paused.skipped）", { rule: string }, ["rule"]],
+  [
+    "replay",
+    "补跑一条规则从 since 起暂停时跳过的事件，每条只补一次；since 用恢复结果里的 paused.since",
+    { rule: string, since: string },
+    ["rule", "since"],
+  ],
+  ["run", "立即运行一条规则一轮", { rule: string, subject: string, reason: string }, ["rule"]],
 ] as const;
 
 const usesSourceKey = (name: string) => ["emit", "tell"].includes(name);
@@ -57,7 +71,7 @@ function validArguments(tool: Tool, args: any) {
 function callTool(hub: Hub, name: Tool["name"], args: any) {
   switch (name) {
     case "status":
-      return hub.state();
+      return hub.state(args.before);
     case "why":
       return hub.why(args.run);
     case "answer": {
@@ -72,6 +86,20 @@ function callTool(hub: Hub, name: Tool["name"], args: any) {
       return hub.event(args);
     case "tell":
       return hub.tell(args);
+    case "pause":
+      return hub.pause(args.rule, {
+        ...(args.reason !== undefined && { reason: args.reason }),
+        ...(args.until !== undefined && { until: args.until }),
+      });
+    case "resume":
+      return hub.resume(args.rule);
+    case "replay":
+      return hub.replay(args.rule, { since: args.since });
+    case "run":
+      return hub.run(args.rule, {
+        ...(args.subject !== undefined && { subject: args.subject }),
+        ...(args.reason !== undefined && { reason: args.reason }),
+      });
   }
 }
 

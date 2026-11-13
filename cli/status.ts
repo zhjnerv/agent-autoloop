@@ -50,8 +50,8 @@ const unlinked = (text: string) => text.replace(LINK, "$1");
 
 const WEEK = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
-export function render(state: any, { color, columns }: { color: boolean; columns?: number }) {
-  const room = Math.min(columns || 100, 120);
+/** Colours that are there only on a terminal. */
+function stylesFor(color: boolean) {
   const sgr =
     (code: string): Style =>
     (text) =>
@@ -59,8 +59,11 @@ export function render(state: any, { color, columns }: { color: boolean; columns
   const [bold, dim, underline, red, green, yellow, magenta, cyan] = ["1", "2", "4", "31", "32", "33", "35", "36"].map(
     sgr,
   );
-  const heading = sgr("1;34");
+  return { bold, dim, underline, red, green, yellow, magenta, cyan, heading: sgr("1;34") };
+}
 
+/** Times as a person reads them, in the hub's time zone, counted from the hub's now. */
+export function clockFor(state: { now: string; timezone: string }) {
   const zone = state.timezone;
   const now = Date.parse(state.now);
   const dayOf = (at: number) => {
@@ -84,6 +87,70 @@ export function render(state: any, { color, columns }: { color: boolean; columns
     const minutes = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000));
     return minutes < 60 ? `${minutes} 分钟` : `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟`;
   };
+  return { when, lasted };
+}
+
+// A word both sh and PowerShell take as it is: # starts a comment and @ a splat only at the front of a word.
+const PLAIN = /^[\p{L}\p{N}_./][\p{L}\p{N}_.#@:/-]*$/u;
+
+/** A word the user's shell reads back unchanged: single quotes, which neither expands inside, as each shell escapes them.
+ * PowerShell also takes the curly single quotes (common in Chinese text) as quotes, so each of those is doubled too. */
+const shellWord = (word: string, windows: boolean) =>
+  PLAIN.test(word)
+    ? word
+    : windows
+      ? `'${word.replace(/['\u2018\u2019\u201a\u201b]/g, "$&$&")}'`
+      : `'${word.replaceAll("'", `'\\''`)}'`;
+
+/** The command that hands a rule what its pause skipped since then, to copy as it is into this machine's shell. */
+export const replayCommand = (rule: string, since: string, windows = process.platform === "win32") =>
+  `agent-autoloop replay ${shellWord(rule, windows)} --since ${shellWord(since, windows)}`;
+
+/** One event a pause skipped, in a line no wider than `room`: when it came, from where, what and about what. */
+export function skippedLine(event: any, room: number, when: (iso: string) => string, from = (id: string) => id) {
+  const head = `${when(event.receivedAt)}  `;
+  const what = `${from(event.source)} ${event.type} ${event.subject}${event.summary ? `：${event.summary}` : ""}`;
+  return head + wrap(what, room - width(head), 1)[0];
+}
+
+/** A finished run is no longer going or waiting to go. */
+export const finished = (run: any) => run.state !== "claimed" && run.state !== "queued";
+
+/** Finished runs, each its own entry: when it ended, its number, how and its rule, then a line or two of what came of it. */
+export function runRows(state: any, runs: any[], { color, columns }: { color: boolean; columns?: number }) {
+  const room = Math.min(columns || 100, 120);
+  const { dim, red, green, yellow } = stylesFor(color);
+  const { when } = clockFor(state);
+  const RUN_LOOK: Record<string, [string, Style]> = {
+    done: ["做完了", green],
+    nothing: ["没事可做", dim],
+    cancelled: ["停了", yellow],
+    unknown: ["不确定", red],
+  };
+  const out: string[] = [];
+  const ended = runs.map((run: any) => (run.finishedAt ? when(run.finishedAt) : ""));
+  const timeRoom = Math.max(0, ...ended.map(width));
+  const runRoom = Math.max(0, ...runs.map((run: any) => width(`#${run.id}`)));
+  const lookRoom = Math.max(...Object.values(RUN_LOOK).map(([label]) => width(label)));
+  runs.forEach((run: any, index: number) => {
+    const [label, style] = RUN_LOOK[run.state] ?? [run.state, (text: string) => text];
+    const before = `  ${pad(ended[index], timeRoom)} ${pad(`#${run.id}`, runRoom)} ${pad(label, lookRoom)} `;
+    out.push(
+      `  ${dim(pad(ended[index], timeRoom))} ${dim(pad(`#${run.id}`, runRoom))} ${style(pad(label, lookRoom))} ${run.rule}`,
+    );
+    const outcome = run.error || run.summary;
+    if (!outcome) return;
+    const look = run.error ? red : run.state === "nothing" ? dim : (text: string) => text;
+    const indent = " ".repeat(width(before));
+    for (const line of wrap(unlinked(outcome), room - indent.length, 2)) out.push(indent + look(line));
+  });
+  return out;
+}
+
+export function render(state: any, { color, columns }: { color: boolean; columns?: number }) {
+  const room = Math.min(columns || 100, 120);
+  const { bold, dim, underline, red, green, yellow, magenta, cyan, heading } = stylesFor(color);
+  const { when, lasted } = clockFor(state);
 
   const out: string[] = [];
   const say = (line = "") => out.push(line);
@@ -125,9 +192,21 @@ export function render(state: any, { color, columns }: { color: boolean; columns
       );
   }
 
+  const sourceName = (id: string) => state.sources.find((one: any) => one.id === id)?.name ?? id;
   const paused = state.lines.filter((line: any) => line.paused);
   if (paused.length) section(`${heading("暂停中")}${dim("（恢复：agent-autoloop resume <规则>）")}`);
-  for (const line of paused) say(`  ${line.name}${line.paused.reason ? dim(`：${line.paused.reason}`) : ""}`);
+  for (const line of paused) {
+    const { reason, since, until, skipped } = line.paused;
+    say(`  ${line.name}${reason ? dim(`：${reason}`) : ""}`);
+    // A schedule lets its moments pass and keeps no events, so it has no count.
+    const ends = until ? `，${when(until)} 自动恢复` : "";
+    say(dim(`    ${when(since)} 起${ends}${skipped ? `，跳过 ${skipped.count} 条事件` : ""}`));
+    const shown = skipped?.events.slice(0, 5) ?? [];
+    for (const event of shown) say(`      ${skippedLine(event, room - 6, when, sourceName)}`);
+    if (shown.length < (skipped?.count ?? 0)) say(dim(`      共 ${skipped.count} 条，这里列出最近 ${shown.length} 条`));
+    // Nobody reads anything when a pause ends by itself, so the way to replay is told while it lasts.
+    if (until && skipped?.count) say(dim(`    到时不会列出这些事件，之后补跑：${replayCommand(line.name, since)}`));
+  }
 
   const INDENT = "       ";
   if (state.cards.length) section(bold(yellow(`等你 ${state.cards.length}`)));
@@ -146,7 +225,6 @@ export function render(state: any, { color, columns }: { color: boolean; columns
     } else say(dim(`${INDENT}处理完了：agent-autoloop answer ${card.id}`));
   }
 
-  const sourceName = (id: string) => state.sources.find((one: any) => one.id === id)?.name ?? id;
   const because = (event: { source: string; type: string; subject: string; summary: string }) => {
     if (event.type === "card.answered") return `你回答了卡片「${event.summary}」`;
     if (event.type === "schedule.tick") return "到点了";
@@ -168,30 +246,9 @@ export function render(state: any, { color, columns }: { color: boolean; columns
     if (retry && run.error) for (const line of wrap(run.error, room - 6, 2)) say(`      ${red(line)}`);
   }
 
-  const RUN_LOOK: Record<string, [string, Style]> = {
-    done: ["做完了", green],
-    nothing: ["没事可做", dim],
-    cancelled: ["停了", yellow],
-    unknown: ["不确定", red],
-  };
-  const finished = state.runs.filter((run: any) => run.state !== "claimed" && run.state !== "queued").slice(0, 8);
-  if (finished.length) section(heading("最近几轮"));
-  const ended = finished.map((run: any) => (run.finishedAt ? when(run.finishedAt) : ""));
-  const timeRoom = Math.max(0, ...ended.map(width));
-  const runRoom = Math.max(0, ...finished.map((run: any) => width(`#${run.id}`)));
-  const lookRoom = Math.max(...Object.values(RUN_LOOK).map(([label]) => width(label)));
-  finished.forEach((run: any, index: number) => {
-    const [label, style] = RUN_LOOK[run.state] ?? [run.state, (text: string) => text];
-    const before = `  ${pad(ended[index], timeRoom)} ${pad(`#${run.id}`, runRoom)} ${pad(label, lookRoom)} `;
-    say(
-      `  ${dim(pad(ended[index], timeRoom))} ${dim(pad(`#${run.id}`, runRoom))} ${style(pad(label, lookRoom))} ${run.rule}`,
-    );
-    const outcome = run.error || run.summary;
-    if (!outcome) return;
-    const look = run.error ? red : run.state === "nothing" ? dim : (text: string) => text;
-    const indent = " ".repeat(width(before));
-    for (const line of wrap(unlinked(outcome), room - indent.length, 2)) say(indent + look(line));
-  });
+  const recentRuns = state.runs.filter(finished).slice(0, 8);
+  if (recentRuns.length) section(heading("最近几轮"));
+  for (const line of runRows(state, recentRuns, { color, columns })) say(line);
 
   const CARD_LOOK: Record<string, [string, Style]> = {
     decided: ["已回答", cyan],

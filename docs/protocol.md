@@ -19,6 +19,8 @@
 
 ## 六个词
 
+跨对象的状态、写入者与历史约束集中在[状态与转换](state-machines.md)。
+
 | 词       | 是什么                                                                                                                   |
 | -------- | ------------------------------------------------------------------------------------------------------------------------ |
 | **事件** | 发生了一件事：来源、编号、类型、对象、一句话、详情、回原处的链接。时间到了是事件，你点了卡片也是事件。                   |
@@ -52,6 +54,7 @@
       "model": "…",
       "effort": "high",
       "access": "edit",
+      "tier": "…", // 可选：服务档位，现在只有 Codex 插件用，原样传成它的 service_tier，比如 "priority" 就是 Codex 应用里的 Fast；不写就跟那台电脑上 Codex 自己的配置
       "program": "…", // 可选：内置插件启动这个程序，代替自动找到的那个，比如设好环境变量再 exec claude 的脚本
     },
     "cursor": {
@@ -62,6 +65,7 @@
     },
   },
   "channels": { "feishu": { "name": "飞书", "answerers": ["ou_xxx"] } },
+  "defaultChannels": ["feishu"], // 可选：自己没写 channels 的卡片和通知（tell、中台自己的告警、别处定时任务的提问、没写 channels 的规则）只发到这几个通道，不写就发到所有通道
   "rules": [
     {
       "name": "处理告警",
@@ -70,12 +74,13 @@
       "cwd": "~/code/shop",
       "skill": "run-ops",
       "prompt": "按其中……一节处理。",
+      "title": "alert-{id}", // 可选：会话标题，放在提示词第一行；{subject} 是这一轮事件共同的对象，{id} 是它按 / # : 分开的最后一段
       "group": "ops", // 同一组一次一轮，默认就是规则名
       "parallel": 3, // 写了就按对象分事项：同一对象一次一轮，这一组最多 3 轮，还受接单程序的 worker.capacity 限制（默认 2）
       "resume": true, // 同一事项的新事件接着上一轮的会话，默认每次开新会话
       "tell": "needed", // always 每轮做成都发（没事可做、没跑成不发）/ needed 只在有卡片时（默认）/ never 只压住回执里的通知，提问和中台自己的告警照发
       "emits": { "source": "shop", "types": ["pr.*"] }, // 回执里能发什么事件，不写就不能发
-      "channels": ["feishu"], // 这条规则的卡片和通知只发到这几个通道，不写就发到所有通道
+      "channels": ["feishu"], // 这条规则的卡片和通知只发到这几个通道，不写就照 defaultChannels
     },
   ],
   "elsewhere": [
@@ -97,7 +102,11 @@
 
 `elsewhere` 是在别处定时跑的任务：中台不启动它们，只在 `agent-autoloop status` 里列出来，它们要找你时用 `POST /v1/tell`。写了 `cwd`（还要写 `skill` 或 `prompt`）的也能问你：卡片带选项，你答了，中台像规则的一轮那样叫醒 `to`，在 `cwd` 照 `skill`、`prompt` 接着做，这一轮的组就是任务名，一次一轮，不接定时任务自己的会话。规则写错了，文件改动不生效，旧规则继续跑，并推一张卡片告诉你错在哪。
 
-写了 `resume`，一轮开始时如果事项的上一轮做完了（包括没事可做）、留下了会话，就接着那个会话；会话越接越长，Token 和费用也会跟着涨。这几种情况开新会话：上一轮被停掉了（你停的，或连续失败停下的），接着它多半还是同样的结果；上一轮是别的 Agent 跑的；上一轮没有会话。没写 `parallel` 时整条规则是一个事项，所有事件接同一个会话；事件不带 `subject` 时也都算同一个事项。回答和到期的复查仍回到提问和约定时的会话，重派的也留在自己的会话。
+写了 `resume`，一轮开始时如果事项的上一轮做完了（包括没事可做）、留下了会话，就接着那个会话；会话越接越长，Token 和费用也会跟着涨。这几种情况开新会话：上一轮被停掉了（你停的，或连续失败停下的），接着它多半还是同样的结果；上一轮是别的 Agent 跑的；上一轮没有会话。没写 `parallel` 时整条规则是一个事项，所有事件接同一个会话；事件不带 `subject` 时也都算同一个事项。回答和到期的复查在 Agent 没变时回到提问和约定时的会话，重派的也留在自己的会话。复查的旧日志若没有记录会话所属 Agent，会保留复查资料，不强行沿用旧会话，仍按 resume 规则决定是否续接当前 Agent 最近的会话。
+
+`title` 给按第一条消息起名的客户端用：写了就单独占提示词的第一行（Codex 插件在提示词前另加一段说明，不在第一行），同一事项的各轮名字一样，不同事项分得开。它要是字母或数字开头、不含空白的一个词：有的客户端只取第一个词；提示词作为参数交给 Agent 的命令行，对象不能打头，免得 `-` 或 `/` 开头的对象被当成选项或命令。占位符只认 `{id}` 和 `{subject}`。`subject` 只含校验过的字符，本来就进提示词；这一轮的事件对象不止一个，或者都没有对象（比如定时），占位符就留空。不写 `title` 的规则提示词和以前一样。
+
+同组规则的 `parallel` 是整组上限。还可以给单条规则设置 `maxActive`，限制该规则同时领取的轮数，各事项仍各自排队。给 `agents` 里的某个 Agent 设置 `maxActive`，则限制它跨所有规则同时领取的轮数。两个值都可省略，填写时用正整数。三个上限同时生效，调低后等已领取的轮次收尾再派新单。
 
 不管写没写 `resume`，一轮要接的会话里如果还有别的轮次没结束，或者没了音信、可能还在跑，这一轮就开新会话，不让两个进程开同一个会话；回答和复查的内容照样带给它。
 
@@ -126,7 +135,7 @@ GET /v1/events/34                  Authorization: Bearer <来源的密钥>
 ```
 
 - 只能查自己发的事件。别的来源的事件和不存在的一样，返回 404。
-- `runs` 是这条事件现在所在的每一轮，按编号排。没跑成的一轮重试时会把同一事项后来的事件并进来，所以并过的事件会出现在更早的那一轮里。
+- `runs` 是这条事件现在所在的每一轮，按编号排。没跑成的一轮重试时会把同一事项后来的事件并进来，所以并过的事件会出现在更早的那一轮里。暂停时跳过的事件被本人补跑后，`paused` 不变，`runs` 里多了补跑的那一轮。
 - `attempts` 是这一轮已经没跑成几次，`error` 是最近一次没跑成的原因，做成后清空。
 - `summary` 是回执里的一句话，`events` 是回执里发出、中台新记下的事件（写法和回执一样）；和已有事件同一个 `id` 的只记一次，不算在这一轮。这一轮还合进了别的来源的事件时，两项都是 `null`：那是 Agent 读了别人的资料后写的。加这个接口之前的版本里，回执发出的事件没记在轮次上，`events` 是空的。
 
@@ -181,17 +190,17 @@ GET /v1/work?claim=<这次领活的编号>&wait=50&running=7,8&capacity=1    Aut
 // Job：一轮的全部。token 只对这一轮的这一次执行有效。
 {
   "run": 12, "token": "…", "attempt": 1,
-  "rule": { "name": "处理告警", "cwd": "~/code/shop", "skill": "run-ops", "prompt": "按其中……处理。" },
+  "rule": { "name": "处理告警", "cwd": "~/code/shop", "skill": "run-ops", "prompt": "按其中……处理。", "title": "alert-{id}" },  // title 原样给接单程序，没写就没有
   "agent": { "id": "claude", "name": "Claude Code", "use": "claude", "model": "…", "effort": "high", "access": "edit" },
   "session": null,       // 尽量接着的会话：重派时是上一次的，回答来了是提问那一轮的，规则写了 resume 时是这个事项上一轮的。接不上就开新的，所以它只是优化
   "askFirst": ["删数据", "…"],
   "context": {           // 接单程序把它写成文件交给 Agent，都是资料
     "events":  [{ "id", "source", "sourceName", "type", "subject", "summary", "detail", "link", "receivedAt" }],
-    "answers": [{ "card", "title", "options", "choice", "text", "about", "by", "at" }],  // 这一轮要接着做的决定
+    "answers": [{ "card", "title", "options", "choice", "chosen", "text", "about", "by", "at" }],  // 这一轮要接着做的决定；choice 是从 0 起的下标，chosen 是所选那项的文字，自由文字回答时就是那句回答
     "timers":  [{ "key", "about", "at" }],                                               // 这一轮到期的复查
     "waiting": [{ "key", "about", "at" }],                                               // 这个事项还没到期的复查
     "open":    [{ "card", "title", "text", "at" }],                                      // 同来源同组还没收尾的卡片
-    "decided": [{ "card", "title", "choice", "at" }]                                     // 这个事项定过的事，只对当时那件事有效
+    "decided": [{ "card", "title", "choice", "at" }]                                     // 这个事项定过的事，只对当时那件事有效；choice 已是所选那项的文字，不是下标
   }
 }
 ```
@@ -294,7 +303,7 @@ GET /v1/cards/next?wait=50    Authorization: Bearer <通道的密钥>
 
 ```
 GET  /v1/state              Authorization: Bearer <本人的密钥>
-→ 200 { "seq", "totals", "cards", "recentCards", "agents", "channels", "sources", "lines", "elsewhere", "runs", "nextBefore", "hasMore", "unrouted", "spending", "timers", "now", "timezone" }
+→ 200 { "seq", "totals", "cards", "recentCards", "agents", "channels", "sources", "lines", "pauses", "skipped", "elsewhere", "runs", "nextBefore", "hasMore", "unrouted", "spending", "timers", "now", "timezone" }
 
 POST /v1/cards/56/answer    { "choice": 1 } 或 { "text": "别的想法" }
 POST /v1/cards/56/resolve   { "reason": "不用决定了，因为……" }
@@ -305,36 +314,47 @@ POST /v1/runs/12/cancel     {}
 
 整份状态在同一个快照里读出，`seq` 是那时的日志序号：自己做看板的，先取状态，再从 `GET /v1/stream?after=<seq>` 接着读，不漏也不重。`cards`、`recentCards` 在这里多带两项：`lane` 是卡片所在的事项（写了 `parallel` 的规则是事件的对象，别的规则是空字符串），`about` 是提问时留给接着干的那一轮的说明。通道和卡片页拿不到这两项。旧客户端忽略这些字段即可。
 
-### 暂停、恢复、立即运行
+`GET /healthz` 不带密钥，返回 `{ "ok": true, "commit": "<中台运行的版本>" }`；`doctor`、服务状态和一致性检查都用它判断中台是否在线。
+
+### 暂停、恢复、补跑、立即运行
 
 ```
-POST /v1/rules/巡检/pause      { "reason": "上游在修", "until": "2026-11-07T09:00:00+08:00" }   两项都可以不写
-→ 200 { "changed": true, "rule": "巡检", "paused": { "by": "owner", "reason": "上游在修", "since": "…", "until": "…" } }
-POST /v1/rules/巡检/resume     {}
-→ 200 { "changed": true, "rule": "巡检" }
+POST /v1/rules/意见/pause      { "reason": "下游在修", "until": "2026-11-07T09:00:00+08:00" }   两项都可以不写
+→ 200 { "changed": true, "rule": "意见", "paused": { "by": "owner", "reason": "下游在修", "since": "…", "until": "…",
+        "skipped": { "count": 0, "events": [] } } }
+POST /v1/rules/意见/resume     {}
+→ 200 { "changed": true, "rule": "意见", "paused": { "by": "owner", "reason": "下游在修", "since": "2026-11-06T08:59:12.345Z", "until": null,
+        "skipped": { "count": 2, "events": [{ "id": 412, "source": "app", "type": "feedback.new", "subject": "#99",
+                                              "summary": "…", "receivedAt": "…", "rules": ["意见"] }, …] } } }
+POST /v1/rules/意见/replay     { "since": "2026-11-06T08:59:12.345Z" }
+→ 200 { "events": [411, 412], "runs": [41, 42] }
 POST /v1/rules/巡检/run        { "subject": "#12", "reason": "看一眼" }                         两项都可以不写
 → 200 { "event": 88, "run": 41 }
 ```
 
 只接受本人的密钥。规则名按 URL 编码放进路径，请求体可以为空；不认识的字段返回 400。没有这条规则返回 404 `没有这条规则：<名字>`；`elsewhere` 里的任务返回 400，因为中台不启动它。
 
-暂停和恢复是日志里的事实（种类 `pauseRule`、`resumeRule`），不改 `rules.json`；重启、从日志重建投影后照样有效。`by` 是所用本人密钥的名字。重复暂停只更新原因和 `until`，`since` 保留第一次的时间；原因和 `until` 都没变时 `changed` 为 false，也不追加事实。`until` 要带时区、晚于现在；到了这个时间中台自动恢复，记一条 `tick` 事实。
+暂停、恢复和补跑是日志里的事实（种类 `pauseRule`、`resumeRule`、`replayRule`），不改 `rules.json`；重启、从日志重建投影后照样有效。`by` 是所用本人密钥的名字。重复暂停只更新原因和 `until`，`since` 保留第一次的时间；原因和 `until` 都没变时 `changed` 为 false，也不追加事实。`until` 要带时区、晚于现在；到了这个时间中台自动恢复，记一条 `tick` 事实。
 
 规则暂停中被移出 `rules.json` 也照样能恢复。
 
 暂停期间：
 
 - **定时规则**：到点直接跳过，不记事件，不积压。`lines[].skippedAt` 是最近一次跳过的时刻。恢复（手动或到了 `until`）后不补跑暂停期间错过的时刻，从恢复的那一刻起的下一个时刻照常跑；中台在暂停期间睡着了也一样。
-- **事件规则**：事件照常记下，但这条规则不接、不派活；恢复后也不补接。事件的 `paused` 记着因为暂停没接它的规则，`/v1/events` 的应答多一个 `paused` 列表，`routed` 只列真正接了的规则。最近 20 条这样的事件在 `/v1/state` 的 `skipped` 里。这类事件不算“没有规则接的事件”。同一事件匹配的其他规则照常接。不补接是因为暂停常常是因为下游坏了或者要止损，事后一次性涌进来的活比漏掉的更难收拾；需要时用立即运行补一轮。
+- **事件规则**：事件照常记下，但这条规则不接、不派活，也不排队等恢复；恢复后不自动补接。事件的 `paused` 记着因为暂停没接它的规则，`/v1/events` 的应答多一个 `paused` 列表，`routed` 只列真正接了的规则。最近 20 条这样的事件在 `/v1/state` 的 `skipped` 里。这类事件不算“没有规则接的事件”。同一事件匹配的其他规则照常接。不自动补接是因为暂停常常是因为下游坏了或者要止损，事后一次性涌进来的活比漏掉的更难收拾；要不要补由本人看过再定，见下面的补跑。
 - **已经排队的、等重试的、暂停期间收到回答或到期复查的这一轮**：留在队列里不派出去，恢复后照常领取，不丢回答。已经在跑的这一轮不受影响，要停用 `stop`。
+
+`paused.skipped` 是这次暂停开始（`since`）后这条规则跳过、还没补跑的事件：`count` 是总条数，`events` 是其中最近 20 条，新的在前，每条和 `/v1/state` 的 `skipped` 一样带 `id`、`source`、`type`、`subject`、`summary`、`receivedAt` 和收到时因为暂停没接它的规则 `rules`（事件收到时记下的，哪条规则补跑过也照样列着）。条数多于 20 时只列 20 条，看 `count` 就知道还有多少。定时规则暂停时不记事件，`skipped` 是 `null`。暂停的应答里是到这时为止跳过的；恢复的应答多了 `paused`，就是刚解除的那次暂停，`skipped` 在解除之后读，这次暂停跳过的都在里面，之后不会再多。
+
+补跑把这些事件原样交给这条规则，和事件当时就被接下一样：同一事项有排队的一轮就并进去，写了 `parallel` 的按事件的 `subject` 分事项，Agent 拿到的是原来的来源、类型、对象、摘要、详情和链接。`since` 必填，要带时区，补的是这条规则从这个时间起暂停时跳过、还没补跑的全部事件，恢复应答里的 `paused.since` 就是这次暂停的。事件本身不改，`paused`、`routed` 照旧记着收到时谁接了、谁因为暂停没接；补跑只是把它接到这条规则的一轮上，`GET /v1/events/<编号>` 的 `runs` 里多了这一轮，`why` 的时间线多一行“本人补跑暂停时跳过的事件”；并进的是早就排着的一轮（在等重试、同组满了、接单程序离线）时，那一轮的 `why` 里不显示这条事件和这一行。接到过这条规则某一轮的事件就不再算欠着，所以同一条只补一次，再补跑同一段返回空列表，`paused.skipped` 也不再数它；顶层 `skipped` 记的是收到时的情况，补过的照样在里面。同一事件还被别的规则的暂停跳过时，那条规则仍欠着它，恢复后可以各自补。**暂停中的规则不能补跑**，返回 409 `规则「…」暂停中，先恢复再补跑`；定时规则返回 400。写了 `until` 的暂停到点自动恢复时没人看应答：命令行在暂停时就给出补跑命令，暂停期间 `status` 也列着条数和这条命令。
 
 立即运行走正常派活：记一条 `run.manual` 事件（定时规则的来源是 `schedule`，事件规则用它的 `when.source`），`summary` 是“<密钥名> 手动运行”，`detail` 是 `reason`；`subject` 决定 `parallel` 规则的事项。同一事项已经有排队的一轮时并进那一轮，并取消它的重试等待。这一轮的 `runs[].manual` 为 true。**暂停中的规则不能立即运行**，返回 409 `规则「…」暂停中，先恢复再手动运行`：暂停的意思是这条规则一件活都不派，手动运行也不例外，这样“暂停了就不会再花钱、不会再对外动作”这一条没有例外。要试跑就先恢复再运行。
 
-`/v1/state` 里每条规则（`lines[]`）多了 `paused`（生效中的暂停：`by`、`reason`、`since`、`until`，没暂停是 `null`）和 `skippedAt`；顶层多了 `pauses`（所有生效中的暂停，每项带规则名 `name`）和 `skipped`。旧客户端忽略这些字段即可。
+`/v1/state` 里每条规则（`lines[]`）多了 `paused`（生效中的暂停：`by`、`reason`、`since`、`until`、`skipped`，没暂停是 `null`）和 `skippedAt`；顶层多了 `pauses`（所有生效中的暂停，每项带规则名 `name`）和 `skipped`。旧客户端忽略这些字段即可。
 
-命令行：`agent-autoloop pause <规则> [--reason 原因] [--until 时间]`、`resume <规则>`、`run <规则> [--subject 对象] [--reason 说明]`；`status` 列出暂停中的规则。
+命令行：`agent-autoloop pause <规则> [--reason 原因] [--until 时间]`、`resume <规则>`、`replay <规则> --since <时间>`、`run <规则> [--subject 对象] [--reason 说明]`。`pause` 说明暂停期间的事件不排队、恢复时会列出；`resume` 列出这次暂停跳过的事件（最多 20 条，多了写明共几条），并给出补跑这一段的 `replay` 命令；`status` 列出暂停中的规则、从什么时候起、跳过了几条和最近 5 条。已经恢复的规则以前跳过的事件不再出现在 `status` 里。
 
-`agent-autoloop check [文件]` 只读文件、校验规则，不打开中台数据库，也不把文件载入中台；不写文件名就查 `rules.json`。可以先校验一份草稿再换上去。`/v1/state` 一次给最近 60 轮，`?before=<nextBefore>` 翻更早的。
+`agent-autoloop check [文件]` 只读文件、校验规则，不打开中台数据库，也不把文件载入中台；不写文件名就查 `rules.json`。可以先校验一份草稿再换上去。`/v1/state` 一次给最近 60 轮，`?before=<nextBefore>` 翻更早的。`agent-autoloop runs [规则] [--before <第几轮>]` 就这样往前翻，一次列 20 轮做完的；只看一条规则时在命令行这边筛，协议不变。
 
 `/v1/state` 的 `spending.today`、`spending.week` 独立于分页，按规则时区的今天和过去 7 × 24 小时的完成时间汇总。每项含 `rounds`、`tokens`、`cost`、`missingTokens`、`missingCost`，后两项是没报对应用量的轮数；从未开始就取消的轮次不计入。
 
@@ -367,7 +387,7 @@ POST /v1/rules/巡检/run        { "subject": "#12", "reason": "看一眼" }    
 | 提问之后问题自己好了                     | 后面的 Agent 核实后在 `resolve` 里结掉，卡片自动改成“不用决定了”                                                                                                                                                                    |
 | 规则写错了                               | 旧规则继续跑，告诉你错在哪                                                                                                                                                                                                          |
 | 规则删掉或改名了                         | 还没领走的和之后没跑成的这一轮记为 `cancelled`，不再派发，发一张通知卡片；已经在跑的跑完照常收结果                                                                                                                                  |
-| 规则暂停了                               | 到点跳过、事件不接，都不积压；排队的留着；恢复后不补跑，从下一个时刻照常跑                                                                                                                                                          |
+| 规则暂停了                               | 到点跳过、事件不接，都不积压；排队的留着；恢复后不自动补跑，定时的从下一个时刻照常跑；恢复时列出跳过的事件，用 `replay` 补跑，每条只补一次                                                                                       |
 | 暂停写了 `until`，中台到点时没开着       | 醒来就恢复，暂停期间的时刻不补                                                                                                                                                                                                      |
 | 规则文件被删、移走或读不到               | 旧规则继续跑，告诉你一次；放回去就接着用。从没载入过规则的新中台读不到就不启动                                                                                                                                                      |
 
@@ -382,7 +402,7 @@ POST /v1/rules/巡检/run        { "subject": "#12", "reason": "看一眼" }    
 | 一轮的 token     | 报告这一轮的这一次执行                                      | 碰别的轮次                             |
 | 通道的密钥       | 领卡片、报告、转达 `answerers` 的回答                       | 其他一切                               |
 | 带权限的卡片链接 | 回答这一张卡片                                              | 其他一切                               |
-| 本人的密钥       | 看全部、回答、结案、停止，暂停、恢复、立即运行规则          | 发事件，领活，改规则（规则只在文件里） |
+| 本人的密钥       | 看全部、回答、结案、停止，暂停、恢复、补跑、立即运行规则    | 发事件，领活，改规则（规则只在文件里） |
 
 普通访问密钥只保存 SHA-256；本机主密钥另存 `master.key`。接单程序不把中台密钥放进 Agent 的提示词或资料文件，文件系统的访问范围由 Agent 权限决定。
 
@@ -422,9 +442,9 @@ Node 请求转换层只把 Node 的请求变成 Request；文件、SQLite 连接
 
 `use: "acp"` 配合 `command: ["某个 ACP 程序", "启动参数"]` 使用 stdio ACP v1，ACP Agent 必须写 `command`，没写时这一轮算没跑成，原因里写着缺什么。桥接先初始化，再新建或接着旧会话：Agent 声明了 `loadSession` 就用 `session/load`，只声明 `sessionCapabilities.resume` 就用 `session/resume`。加载时重放的历史不算这一轮的回复，思考和工具输出不进回执。提示词发出去就算这一轮开始了，之后再断就留在原会话重派。接着旧会话时上一次可能已经干了一半，只有 Agent 明确拒绝这个会话（回了错误，或两种恢复都不支持）才开新会话；程序起不来、初始化出错、加载中途断了都留在原会话重派。会话正被别的程序打开（错误的 `data.reason` 是 `thread_active_writer`）也不算拒绝：这一轮算没跑成，原因是 Agent 自己的话，留在原会话过一会儿重派，连续第 3 次的卡片会带上这句话，告诉你要关掉什么。其他错误都算拒绝，不看错误码：官方 Codex 适配器对真不存在的会话回的是 -32603。只有 `end_turn` 且有最后一条文字消息才算完成：有 `messageId` 就按它分消息，没有时思考、工具调用和做完或失败的工具更新都算分界。一轮没完成时桥接马上交代原因，Agent 过 30 秒还不走就连同进程组一起停掉。消息只按换行分帧，读不懂的行算这一轮没跑成。会话编号交给中台保存。没有声明文件读写、终端或交互登录能力，Agent 用自己的工具；需要登录时先用它自己的命令行登录。
 
-权限只选一次性的选项：`read` 允许结构化的读和搜索，`edit` 再允许工作目录内的编辑（核对符号链接，经过找不到目标的链接算在目录外），`full` 允许其他操作。权限请求只带工具调用编号时，按这次调用之前说过的种类和路径判断，请求自己带的字段优先。未提供相应选项就取消。权限依赖 Agent 遵守 ACP，不提供额外的系统隔离；规范允许 Agent 不询问就执行，这种操作 `access` 拦不住，要用 Agent 自己的模式限制。官方 Codex 适配器给的拒绝选项（`reject_once`）只有 `cancel`，选了它整轮以 `stopReason: cancelled` 结束，算没跑成，由中台重派；`read`、`edit` 档下要跑命令的请求就是这样回来的，所以 Agent 非跑命令不可时，给 `full` 或用它自己的模式。`model`、`effort` 不生效。核对依据：[初始化](https://agentclientprotocol.com/protocol/v1/initialization)、[会话](https://agentclientprotocol.com/protocol/v1/session-setup)、[工具权限](https://agentclientprotocol.com/protocol/v1/tool-calls)。
+权限只选一次性的选项：`read` 允许结构化的读和搜索，`edit` 再允许工作目录内的编辑（核对符号链接，经过找不到目标的链接算在目录外），`full` 允许其他操作。权限请求只带工具调用编号时，按这次调用之前说过的种类和路径判断，请求自己带的字段优先。未提供相应选项就取消。权限依赖 Agent 遵守 ACP，不提供额外的系统隔离；规范允许 Agent 不询问就执行，这种操作 `access` 拦不住，要用 Agent 自己的模式限制。官方 Codex 适配器给的拒绝选项（`reject_once`）只有 `cancel`，选了它整轮以 `stopReason: cancelled` 结束，算没跑成，由中台重派；`read`、`edit` 档下要跑命令的请求就是这样回来的，所以 Agent 非跑命令不可时，给 `full` 或用它自己的模式。`model`、`effort`、`tier` 不生效。核对依据：[初始化](https://agentclientprotocol.com/protocol/v1/initialization)、[会话](https://agentclientprotocol.com/protocol/v1/session-setup)、[工具权限](https://agentclientprotocol.com/protocol/v1/tool-calls)。
 
-`agent-autoloop mcp` 提供 stdio MCP，固定支持 [2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) 版，不支持 2026-07-28 的无握手协议。工具为 `status`、`why`、`answer`、`resolve`、`stop`、`emit`、`tell`；按本机已有的本人或来源密钥展示工具。它调用同样的 HTTP 接口，不直接改数据库；密钥留在本机 `config.json`。MCP 客户端把程序设为 `node`，参数设为引擎的绝对路径 `bin/agent-autoloop.ts` 和 `mcp`，环境里指定 `AGENT_AUTOLOOP_HOME`。标准输出只写 JSON-RPC。消息只按换行分帧；每个工具调用各自回复，慢调用不挡 `ping`。它不区分调用方，都按本人记录（`answer` 记成本人，`emit` 不带层数），不要配进接单程序启动的 CLI 的用户级配置，否则一轮能自己回答自己的卡片。
+`agent-autoloop mcp` 提供 stdio MCP，固定支持 [2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) 版，不支持 2026-07-28 的无握手协议。工具为 `status`、`why`、`answer`、`resolve`、`stop`、`emit`、`tell`、`pause`、`resume`、`replay`、`run`；`status` 可带 `before` 往前翻轮次；按本机已有的本人或来源密钥展示工具，`pause`、`resume`、`replay`、`run` 和命令行同名命令一样要本人密钥。它调用同样的 HTTP 接口，不直接改数据库；密钥留在本机 `config.json`。MCP 客户端把程序设为 `node`，参数设为引擎的绝对路径 `bin/agent-autoloop.ts` 和 `mcp`，环境里指定 `AGENT_AUTOLOOP_HOME`。标准输出只写 JSON-RPC。消息只按换行分帧；每个工具调用各自回复，慢调用不挡 `ping`。它不区分调用方，都按本人记录（`answer` 记成本人，`emit` 不带层数），不要配进接单程序启动的 CLI 的用户级配置，否则一轮能自己回答自己的卡片。
 
 ### 通道模板与命令行示例
 
@@ -436,7 +456,7 @@ Webhook 通道的 `config.json` 配置使用 `use: "webhook"`、`url` 和 `platf
 
 ## 业务场景模板
 
-`examples/recipes/` 提供七套场景。反馈处理、网站巡检和飞书周报与业务摘要默认使用飞书本人私聊与 `Asia/Shanghai`；都是规则、通道和 `command` 的组合。
+可直接启用的场景及配置说明见 [README](../README.md#拿来即用的场景模板)。
 
 反馈来源只负责唤醒同一事项，当前业务状态和授权从可信接口重新读取。网站检查以本规则未关闭的异常通知卡片作为故障记录：首次失败发通知及排查事件，持续失败安静，恢复结案并发恢复事件；手动关闭未恢复卡片后仍失败会重新报告。飞书采集完整读取后写私有快照并发事件，摘要核对快照编号，旧事件不使用新资料；采集与摘要同组串行。只有本人身份可读的数据参与汇总，不把不可见当成未提交。
 
@@ -488,9 +508,9 @@ Apple M5 Pro、24 GB、Node 24.21.0，用 `node scripts/history.ts 1000 10000 10
 
 ## 交付插件
 
-交付是 `plugins/delivery` 的普通 Agent 进程，内核不认识它。项目仍用 `ops/delivery.json`，标签仍是 `deliver`、`deliver-attended`、`deliver-review`、`ask-owner`，提交状态仍为 `delivery`。审查状态默认 `agent-review`，由 `review.status` 修改；命令由 `review.command` 修改。设置格式、规则与 Ship 示例见[配置手册](../skills/agent-autoloop/SKILL.md#交付流水线)。
+交付是 `plugins/delivery` 的普通 Agent 进程，内核不认识它。项目仍用 `ops/delivery.json`，标签仍是 `deliver`、`deliver-attended`、`deliver-review`、`ask-owner`，提交状态仍为 `delivery`。审查状态默认 `agent-review`，由 `review.status` 或接单命令的 `--review-status` 指定。审查可以按项目设置，也可用 `--review-policy owner/name:路径` 从同一个仓库的 main 读取全局策略。设置格式、规则与 Ship 示例见[配置手册](../skills/agent-autoloop/SKILL.md#交付流水线)。
 
-来源只给事件，仓库与执行命令由中台规则固定。内置 `poll.ts` 读取待处理标签，以“仓库、事项、标签记录、当前提交”生成稳定事件编号，不另存游标；某个事项读不到标签记录时这一段记 0，不影响其他事项。无标签（已合并的也一样）、关闭且未合并、fork 或非 main 目标不启动交付。每个 PR 一个事项，并发由规则 `parallel` 和接单程序容量控制；进程失败使用中台的 5 分钟起重试和连续失败通知，不另建队列、槽位、失败计数或通知服务。
+来源只给事件，仓库与执行命令由中台规则固定。内置 `poll.ts` 读取待处理标签，以“仓库、事项、标签记录、当前提交”生成稳定事件编号，不另存游标；某个事项读不到标签记录时这一段记 0，不影响其他事项。无标签（已合并的也一样）、关闭且未合并、fork 或非 main 目标不启动交付。每个 PR 一个事项，并发由规则组的 `parallel`、每条规则或 Agent 的 `maxActive` 和接单程序容量共同控制。
 
 | 步骤               | 必须满足                                                                                                                                                                                                                                              |
 | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -498,15 +518,22 @@ Apple M5 Pro、24 GB、Node 24.21.0，用 `node scripts/history.ts 1000 10000 10
 | 同步               | PR 已包含 main；缺少时请求 GitHub 同步，在本轮内等到同步后的提交出现再继续，15 分钟内没出现才结束这一轮，由中台重试                                                                                                                                   |
 | 审查               | 裸 Git 对象转文字差异；只审分支自己的提交，排除干净合入 main 的变化，保留冲突解决；普通内部文档可略过模型；分支里有三个及以上父提交的章鱼合并时，审查看不到它带来的改动，直接报问题，要求改成普通合并                                                 |
 | 审查进程           | 不检出 PR，不执行其中的代码、测试、设置或 hooks；默认 Codex 忽略用户配置和记忆，只读独立快照                                                                                                                                                          |
+| 审查器             | 默认是内置 Codex 或 `review.command`；`review.agents` 列出的 Agent 写的改动改用给它指定的：内置 Codex 的模型和深度、一条命令，或免审                                                                                                                  |
 | 完整检查           | 草稿先转 ready，转之前记下最新一次检查，只接受比它新的（工作流触发类型要带 `ready_for_review`）；只接受当前提交最新一次 pull_request 工作流和指定 job 都完成且成功，草稿或 skipped job 不算；矩阵 job（名字像 `check (ubuntu-latest)`）每一项都要成功 |
 | 合并               | 再读 PR head、目标分支、main 和标签；head 变化或目标分支不再是 main 就结束这一轮，由中台重试；main 前进就在本轮回到同步，最多 3 轮；检查通过后才写可配置的审查状态，按已审查 SHA 合并                                                                 |
 | 自动合并与响应丢失 | 先关闭已有自动合并并读回确认；合并响应丢失先看是否已经合并，不盲目再提交；清标签失败也读回确认是否已移除；已合并的 PR 最后去掉 `deliver`，没合并的最后去掉 `deliver-review`，只去掉一部分时重试能接着做完，也不会把只审查的 PR 合并                   |
 | 发布               | 等一个覆盖合并提交的 Ship 成功，再核对健康版本；健康 HTTP 200 不能覆盖 Ship 失败或尚未完成                                                                                                                                                            |
 | 后续发布           | 新版覆盖且确实上线可以完成旧交付；已经完成的交付不因后来的失败发布倒退                                                                                                                                                                                |
 
-`deliver-review` 审查通过就结束并移除交付标签，不代表已检查、合并或上线；在等待检查期间加上这个标签，合并前也会停在只审查，不写允许合并的审查状态。审查发现问题时 `delivery` 和审查状态都写 failure，交回问题；通知卡片按提交分开，上一张没关也不会吞掉新提交的问题；`deliver-attended` 不额外产生通知卡片。审查状态是 failure 的提交，标签还留着时再来事件也不再审查、不改状态，这一轮直接结束，要推新提交才会重审；这条记录看审查状态，因为失败的一轮会把错误写到 `delivery` 上。等待检查期间撤回 `deliver`，这一轮结束，`delivery` 写 success，说明里写明已撤回、未合并或发布。普通 issue 的 `ask-owner` 只将可读正文变成问题卡片，去掉代码块和本机路径，答复后移除标签。不向 GitHub 发评论，不建立 PR 说明里的多轮审查账本，也不支持用“已处理”文字豁免发现的问题；新提交重新审查。
+等待完整检查时，当前提交最新的 `pull_request` 运行必须比转正式前记录的检查编号更新。该运行处于 `queued`、`waiting` 或 `pending`，完整 jobs 列表为空，且从 `created_at` 起超过 10 分钟，判为 GitHub 收下检查后没有开始执行。插件把 PR 转草稿再转正式，自救一次。转正式前重新记录最新的 `pull_request` 运行编号，排除转草稿触发的检查，只接受之后的新运行。自救记录与提交绑定，执行期间存在 `DeliveryIO.checkRecovery`，需要复查时把检查编号作为 `checkAfter` 写进已有 `delivery-retry` 的 `about` JSON，与 `head` 和错误次数一起保存，下一轮继续使用，提交变化后重新计。新运行也按同样条件卡住时，立即通过交付退回和通知流程说明 GitHub 一直没有开始检查，不计入五次执行错误。已有任何 job 的运行继续等待，其余情况仍受原有 30 分钟等待和错误重试规则约束。`workflow_dispatch` 运行不作为完整检查依据。
 
-带 `deliver` 标签的已合并 PR 直接继续跟踪 Ship 和健康检查，标签已去掉的不再跟踪、不写状态；审查期间被别人合并的也接着跟踪；跟踪失败时这一轮写“没跑成”，由中台照常重试。默认最多跟踪 30 分钟，超时交给中台重试；没有健康设置的项目明确报告只完成合并。发布范围对比**健康版本到目标提交的整个差异**：只有普通内部文档变化可跳过，可执行位、符号链接、重命名到外部路径、未知历史都要求发布；后来只有文档变化不能让尚未完成的代码发布被跳过。健康接口报短提交号时先向 GitHub 换成完整号，换不到就算要发布。
+`deliver-review` 审查通过就结束并移除交付标签。在等待检查期间加上它，合并前也会停在只审查。等待检查时撤回 `deliver` 会结束本轮，并报告 `withdrawn`，表示没有合并或发布。关闭未合并的 PR 先写 `delivery` 失败再清交付标签，不让等待者卡在 pending。默认用中台的失败重试和提问卡片。接入已有交付工具时，`--notify-command` 把 `ask-owner` 转告给通知程序，成功后移除标签。退回写 `delivery` 失败并移除交付标签。已有 `deliver-attended` 的退回等待三分钟，仍未清除才转告。临时错误用中台的一分钟复查重试，GitHub 的 5xx 等平台错误最多 60 次，其他执行错误最多 5 次。
+
+改动来源只认提交状态 `delivery-agent/<PR 编号>`。它由项目的 `review.trusted` 或共用策略的 `trusted_submitters` 指定的 GitHub 账号写入。干净同步 main 沿用声明，新提交或手工解决冲突要重新声明。共用策略指定审查器列表，同名可重复，空列表免审。深审路径或只审查请求覆盖免审。普通内部文档按项目策略免审。
+
+审查最多自动三轮。审查器名单、模型或深度不变时，从已经审过的提交之后开始审。每轮全部审查器结束后写入 PR 正文的「Codex 审查」，用可信 GitHub 账号写入的状态验证轮次；可以在每项「处理：」后说明做法。无可信记录的旧轮次不能授权合并。
+
+带 `deliver` 标签的已合并 PR 直接继续跟踪 Ship 和健康检查，标签已去掉的不再跟踪、不写状态；审查期间被别人合并的也接着跟踪。默认最多跟踪 30 分钟，超时交给中台重试；没有健康设置的项目明确报告只完成合并。发布范围对比**健康版本到目标提交的整个差异**：只有普通内部文档变化可跳过，可执行位、符号链接、重命名到外部路径、未知历史都要求发布；后来只有文档变化不能让尚未完成的代码发布被跳过。健康接口报短提交号时先向 GitHub 换成完整号，换不到就算要发布。
 
 Ship 使用本引擎仓库的 `plugins/delivery/action.yml`，项目固定到发布后的完整提交。Action 只输出 `release` 和 `superseded`，项目已有发布步骤根据输出运行。它与交付进程共用 `project.ts` 的范围与健康判断，不在项目里长期复制工具。
 

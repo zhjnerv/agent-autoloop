@@ -1,7 +1,11 @@
 // Failure modes: an owner question with backticks in its title or text cuts the receipt short; a short commit from the health
 // check can't be fetched, so every change needs a release and a docs-only PR never finishes; a failure on an ordinary issue is
 // covered up by the 404 from looking it up as a PR; one item whose label record can't be read fails the whole poll; a failed
-// round writes its error over the delivery status, so the next one forgets the commit had findings and reviews it again.
+// round writes its error over the delivery status, so the next one forgets the commit had findings and reviews it again;
+// an obsolete Ship run requires a remote compare that fails, hiding the successful release of this merge; a manual retry
+// reuses its scratch folder and fails because the origin already exists; closing a labelled PR leaves its status pending;
+// a restarted check that still has no jobs is counted as an execution error instead of returned with its cause and notice;
+// syncing main before a restart saves that restart under the old head, so the next round restarts the same check again.
 // Nothing here reaches GitHub: `gh` is a stand-in first on PATH, and the Git remote is a local folder.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -9,8 +13,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { createIO } from "../plugins/delivery/github.ts";
+import { waitLive } from "../plugins/delivery/delivery.ts";
+import { createIO, github, isGitHubHiccup, type DeliveryOptions } from "../plugins/delivery/github.ts";
 import { poll } from "../plugins/delivery/poll.ts";
+import { settings } from "../plugins/delivery/project.ts";
 import { run } from "../plugins/delivery/run.ts";
 import { readMessage } from "../worker/contract.ts";
 
@@ -20,28 +26,46 @@ const bin = join(root, "bin");
 const routes = join(root, "routes.json");
 const calls = join(root, "calls.txt");
 const statuses = join(root, "statuses.txt");
+const bodies = join(root, "bodies.json");
 mkdirSync(bin);
 writeFileSync(
   join(bin, "gh"),
   `#!${process.execPath}
-const { appendFileSync, readFileSync } = require("node:fs");
-const { FAKE_GH_CALLS, FAKE_GH_ROUTES, FAKE_GH_STATUSES } = process.env;
+const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
+const { FAKE_GH_CALLS, FAKE_GH_ROUTES, FAKE_GH_STATUSES, FAKE_GH_BODIES } = process.env;
 const args = process.argv.slice(2);
 appendFileSync(FAKE_GH_CALLS, args.join(" ") + "\\n");
 const answer = JSON.parse(readFileSync(FAKE_GH_ROUTES, "utf8"))[args[1]];
 const written = /\\/statuses\\/(\\w+)$/.exec(args[1]);
 const asked = /\\/commits\\/(\\w+)\\/status\\?/.exec(args[1]);
-if (answer?.fail || (answer === undefined && !written && !asked)) {
+const listing = /\\/commits\\/(\\w+)\\/statuses\\?/.exec(args[1]);
+const pr = /\\/pulls\\/\\d+$/.test(args[1]);
+if (args[1] === "user") { console.log("42"); process.exit(0); }
+if (answer?.fail || (answer === undefined && !written && !asked && !listing)) {
   console.error(answer?.fail ?? "gh: Not Found (HTTP 404)");
   process.exit(1);
 }
+if (answer?.routes && !args.includes("--undo")) {
+  const table = JSON.parse(readFileSync(FAKE_GH_ROUTES, "utf8"));
+  writeFileSync(FAKE_GH_ROUTES, JSON.stringify({ ...table, ...answer.routes }));
+}
 if (written) {
-  appendFileSync(FAKE_GH_STATUSES, JSON.stringify({ sha: written[1], ...JSON.parse(readFileSync(0, "utf8")) }) + "\\n");
+  appendFileSync(FAKE_GH_STATUSES, JSON.stringify({ sha: written[1], creator: { id: 42 }, ...JSON.parse(readFileSync(0, "utf8")) }) + "\\n");
   console.log("{}");
 } else if (asked) {
   const lines = readFileSync(FAKE_GH_STATUSES, "utf8").split("\\n").filter(Boolean);
   const newestFirst = lines.map((line) => JSON.parse(line)).filter((item) => item.sha === asked[1]).reverse();
   console.log(JSON.stringify({ statuses: newestFirst.filter((item, at) => newestFirst.findIndex((other) => other.context === item.context) === at) }));
+} else if (listing && answer === undefined) {
+  const rows = readFileSync(FAKE_GH_STATUSES, "utf8").split("\\n").filter(Boolean).map(JSON.parse);
+  console.log(JSON.stringify([rows.filter((item) => item.sha === listing[1]).reverse()]));
+} else if (pr) {
+  const bodies = JSON.parse(readFileSync(FAKE_GH_BODIES, "utf8"));
+  if (args.includes("PATCH")) {
+    bodies[args[1]] = JSON.parse(readFileSync(0, "utf8")).body;
+    writeFileSync(FAKE_GH_BODIES, JSON.stringify(bodies));
+  }
+  console.log(JSON.stringify({ ...answer, body: bodies[args[1]] ?? answer.body }));
 } else {
   console.log(JSON.stringify(args.includes("--slurp") ? [answer] : answer));
 }
@@ -52,7 +76,9 @@ process.env.PATH = `${bin}:${process.env.PATH}`;
 process.env.FAKE_GH_ROUTES = routes;
 process.env.FAKE_GH_CALLS = calls;
 process.env.FAKE_GH_STATUSES = statuses;
+process.env.FAKE_GH_BODIES = bodies;
 writeFileSync(statuses, "");
+writeFileSync(bodies, "{}");
 /** What the stand-in answers from here on, by the path after `gh api`, and a clean list of what it was asked. */
 const answers = (table: object) => {
   writeFileSync(routes, JSON.stringify(table));
@@ -103,10 +129,10 @@ const live = publish("docs/a.md", "first");
 const docsOnly = publish("docs/a.md", "second");
 const code = publish("app.ts", "2");
 const internal = ["docs/*.md"];
-const ioIn = (name: string) => {
+const ioIn = (name: string, options?: DeliveryOptions) => {
   const folder = join(root, name);
   mkdirSync(folder);
-  return createIO("example/app", folder);
+  return createIO("example/app", folder, options);
 };
 
 test("a short commit from the health check is made full before comparing", async () => {
@@ -125,6 +151,80 @@ test("a full commit is compared as it is, without asking GitHub", async () => {
 test("a short commit GitHub doesn't know means a release", async () => {
   answers({});
   assert.equal(await ioIn("unknown").releaseRequired("abcdef0", docsOnly, internal), true);
+});
+
+test("Ship uses local ancestry for older runs and the short healthy version", async () => {
+  answers({
+    "repos/example/app/actions/workflows/ship.yml/runs?branch=main&event=push&per_page=100": {
+      workflow_runs: [
+        { id: 2, event: "push", head_sha: docsOnly, status: "completed", conclusion: "success" },
+        { id: 1, event: "push", head_sha: live, status: "completed", conclusion: "success" },
+      ],
+    },
+    [`repos/example/app/compare/${docsOnly}...${live}`]: { fail: "gh: HTTP 502" },
+  });
+  const io = ioIn("ship-history");
+  io.live = async () => ({ sha: live.slice(0, 7), release: "live-before" });
+  const config = settings({
+    repo: "example/app",
+    internal,
+    review: { points: "AGENTS.md" },
+    health: { url: "https://example.invalid/health", field: "commit", pattern: "(?<sha>[0-9a-f]{7,40})" },
+  });
+  assert.deepEqual(await waitLive(docsOnly, config, io), { phase: "docs_only", ship: 2, release: "live-before" });
+  assert.doesNotMatch(readFileSync(calls, "utf8"), /compare\/|commits\//);
+});
+
+test("a manual retry can fetch main in its existing scratch folder", async () => {
+  const folder = join(root, "retry-objects");
+  const first = createIO("example/app", folder);
+  await first.prepareShip?.();
+  const retry = createIO("example/app", folder);
+  await retry.prepareShip?.();
+  assert.equal(await retry.contains(live, docsOnly), true);
+});
+
+test("the toolkit trusts only a commit on main containing its latest tool changes", async () => {
+  const installedFile = `repos/example/app/contents/ops/delivery/kit.json?ref=${code}`;
+  const checks = (installed: string, onMain: string, current: string) => ({
+    [installedFile]: { content: Buffer.from(JSON.stringify({ kit: installed })).toString("base64") },
+    "repos/example/tools/git/ref/heads/main": { object: { sha: code } },
+    [`repos/example/tools/commits?sha=${code}&path=delivery&per_page=1`]: [{ sha: docsOnly }],
+    [`repos/example/tools/compare/${installed}...${code}`]: { status: onMain },
+    [`repos/example/tools/compare/${docsOnly}...${installed}`]: { status: current },
+  });
+  const io = ioIn("kit", { toolkit: "example/tools" });
+  answers(checks(docsOnly, "ahead", "identical"));
+  assert.equal(await io.verifyTools?.(code), null);
+  answers(checks(live, "ahead", "behind"));
+  assert.match((await io.verifyTools?.(code)) ?? "", /不是 main 上的最新版/);
+  answers(checks(live, "diverged", "ahead"));
+  assert.match((await io.verifyTools?.(code)) ?? "", /不是 main 上的最新版/);
+  assert.equal(ioIn("own-kit", { toolkit: "example/app" }).verifyTools, undefined);
+});
+
+test("GitHub's own 5xx and GraphQL failures keep their classification through the CLI", async () => {
+  const api = github("example/app");
+  for (const failure of ["gh: something failed (HTTP 502)", "Something went wrong while executing your query"]) {
+    answers({ "repos/example/app/pulls/1": { fail: failure } });
+    await assert.rejects(() => api("pulls/1"), isGitHubHiccup);
+  }
+  answers({ "repos/example/app/pulls/1": { fail: "secondary rate limit (HTTP 403)" } });
+  await assert.rejects(
+    () => api("pulls/1"),
+    (error) => !isGitHubHiccup(error),
+  );
+});
+
+test("draft and ready use the GitHub CLI's PR transitions", async () => {
+  answers({ ready: {} });
+  const api = github("example/app");
+  await api("pulls/8/draft", {}, "POST");
+  await api("pulls/8/ready", {}, "POST");
+  assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), [
+    "pr ready 8 --repo example/app --undo",
+    "pr ready 8 --repo example/app",
+  ]);
 });
 
 test("a failure on an ordinary issue is reported as it happened", async () => {
@@ -191,6 +291,7 @@ const lastStatus = (context: string) =>
 const startOver = () => {
   writeFileSync(statuses, "");
   writeFileSync(reviews, "");
+  writeFileSync(bodies, "{}");
 };
 const settingsPath = `repos/example/app/contents/ops/delivery.json?ref=${live}`;
 const settingsFile = {
@@ -223,6 +324,120 @@ const delivering = (pr: object) => ({
   [settingsPath]: settingsFile,
   [`repos/example/app/compare/${live}...${code}`]: { status: "ahead" },
 });
+test("a closed unmerged handoff records failure before clearing its queue labels", async () => {
+  startOver();
+  answers({ ...delivering({ ...openPr, state: "closed" }), edit: {} });
+  const phases: string[] = [];
+  const message = await run("example/app", about(8), true, {
+    notifyCommand: join(root, "must-not-notify"),
+    report: (phase) => {
+      phases.push(phase);
+    },
+  });
+  assert.match(message, /已关闭/);
+  assert.equal(lastStatus("delivery")?.state, "failure");
+  assert.match(lastStatus("delivery").description, /已关闭/);
+  assert.deepEqual(phases, ["returned"]);
+  const called = readFileSync(calls, "utf8");
+  assert.ok(called.indexOf(`/statuses/${code}`) < called.indexOf("pr edit"));
+});
+
+test("a check restarted after syncing main is saved under the synchronized head when GitHub fails", async (t) => {
+  startOver();
+  reviewFinds([]);
+  t.mock.method(Date, "now", () => Date.parse("2026-11-12T00:00:00Z"));
+  const checks = `repos/example/app/actions/workflows/check.yml/runs?head_sha=${code}&event=pull_request&per_page=100`;
+  const queued = { head_sha: code, event: "pull_request", status: "queued", created_at: "2026-11-11T00:00:00Z" };
+  answers({
+    ...delivering({ ...openPr, head: { ...openPr.head, sha: docsOnly } }),
+    "repos/example/app/git/ref/heads/main": { object: { sha: code } },
+    [`repos/example/app/contents/ops/delivery.json?ref=${code}`]: settingsFile,
+    [`repos/example/app/compare/${code}...${docsOnly}`]: { status: "behind" },
+    [`repos/example/app/compare/${docsOnly}...${code}`]: { status: "ahead" },
+    "repos/example/app/pulls/8/update-branch": { routes: { "repos/example/app/pulls/8": openPr } },
+    [checks]: { workflow_runs: [{ ...queued, id: 10 }] },
+    "repos/example/app/actions/runs/10/jobs?filter=latest&per_page=100": { jobs: [] },
+    ready: { routes: { [checks]: { workflow_runs: [{ ...queued, id: 12 }] } } },
+    "repos/example/app/actions/runs/12/jobs?filter=latest&per_page=100": { fail: "gh: HTTP 502" },
+  });
+  const message = readMessage(
+    await run("example/app", about(8), true, { notifyCommand: join(root, "must-not-notify") }),
+  );
+  assert.equal(message.problem, undefined);
+  const [retry] = (message.receipt as any).later;
+  assert.deepEqual(JSON.parse(retry.about), { head: code, github: 1, execution: 0, checkAfter: 10 });
+  assert.deepEqual(
+    readFileSync(calls, "utf8")
+      .split("\n")
+      .filter((line) => line.startsWith("pr ready")),
+    ["pr ready 8 --repo example/app --undo", "pr ready 8 --repo example/app"],
+  );
+});
+
+test("a check still stalled after a saved restart returns with its exact cause and notice, without an error retry", async (t) => {
+  startOver();
+  reviewFinds([]);
+  const reason =
+    "GitHub 收下了检查却一直没开始跑（多半是 GitHub 出了事故），已重新触发一次仍不动。等 GitHub 恢复后重新交付。";
+  answers({
+    ...delivering(openPr),
+    [`repos/example/app/actions/workflows/check.yml/runs?head_sha=${code}&event=pull_request&per_page=100`]: {
+      workflow_runs: [
+        { id: 12, head_sha: code, event: "pull_request", status: "queued", created_at: "2026-11-11T00:00:00Z" },
+      ],
+    },
+    "repos/example/app/actions/runs/12/jobs?filter=latest&per_page=100": { jobs: [] },
+    edit: {},
+  });
+  const notices = join(root, "stalled-notices.txt");
+  const notify = join(root, "notify-stalled.mjs");
+  writeFileSync(notices, "");
+  writeFileSync(
+    notify,
+    `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+let input = "";
+for await (const chunk of process.stdin) input += chunk;
+appendFileSync(${JSON.stringify(notices)}, input + "\\n");
+`,
+    { mode: 0o755 },
+  );
+  const started = Date.parse("2026-11-12T00:00:00Z");
+  let clockReads = 0;
+  // The old waiting path must time out immediately so this regression cannot sleep for half an hour.
+  t.mock.method(Date, "now", () => started + (clockReads++ === 0 ? 0 : 31 * 60_000));
+  const phases: string[] = [];
+  const message = await run(
+    "example/app",
+    {
+      ...about(8),
+      timers: [
+        { key: "delivery-retry", about: JSON.stringify({ head: code, github: 0, execution: 0, checkAfter: 11 }) },
+      ],
+    },
+    true,
+    {
+      notifyCommand: notify,
+      report: (phase) => {
+        phases.push(phase);
+      },
+    },
+  );
+  assert.equal(message, `交付退回：${reason}`);
+  assert.equal(lastStatus("delivery").state, "failure");
+  assert.equal(lastStatus("delivery").description, reason);
+  assert.equal(phases.at(-1), "returned");
+  assert.ok(!phases.includes("retrying"));
+  const sent = readFileSync(notices, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(sent.length, 1);
+  assert.ok(sent[0].text.includes(reason));
+  const called = readFileSync(calls, "utf8");
+  assert.match(called, /pr edit 8 --repo example\/app --remove-label deliver,deliver-review/);
+  assert.doesNotMatch(called, /pr ready/);
+});
 const dataLoss = [{ title: "数据会丢", text: "先修复" }];
 
 test("a failed round in between does not open a commit with findings to another review", async () => {
@@ -242,7 +457,7 @@ test("a failed round in between does not open a commit with findings to another 
   const third = await run("example/app", about(8), true).catch((error) => error.message);
   assert.equal(timesReviewed(), 1);
   assert.equal(lastStatus("my-review").state, "failure");
-  assert.match(third, /推新提交/);
+  assert.match(third, /第 1 条还没有处理/);
 });
 
 const merged = { ...openPr, state: "closed", merged_at: "now", merge_commit_sha: code };

@@ -2,7 +2,8 @@
 // the hub; an HTTP failure becomes a successful tool result; notifications get responses; source keys act as owner keys;
 // a client is told a version number left behind by a release; a slow tool call holds up a ping or another call, or is
 // dropped when the input ends while it's in hand; a U+2028 or U+2029 in a request, which JSON leaves as it is, cuts the
-// line, so the request never gets an answer.
+// line, so the request never gets an answer. An Agent asking through MCP sees only the newest page of runs and can't go
+// back past it.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -105,6 +106,14 @@ test("MCP stdio initializes and exposes only the typed hub operations", async ()
     { id: 5, method: "tools/call", params: { name: "why", arguments: { run: 999 } } },
     { id: 6, method: "tools/call", params: { name: "request", arguments: { path: "/etc/passwd" } } },
     { id: 7, method: "tools/call", params: { name: "emit", arguments: { id: "a", type: "one" } } },
+    { id: 8, method: "tools/call", params: { name: "pause", arguments: { rule: "巡检", reason: "上游在修" } } },
+    { id: 9, method: "tools/call", params: { name: "resume", arguments: { rule: "巡检" } } },
+    { id: 10, method: "tools/call", params: { name: "run", arguments: { rule: "巡检", reason: "看一眼" } } },
+    {
+      id: 11,
+      method: "tools/call",
+      params: { name: "replay", arguments: { rule: "巡检", since: "2026-11-11T08:59:12.345Z" } },
+    },
   ];
   child.stdin.end(messages.map((m) => JSON.stringify({ jsonrpc: "2.0", ...m })).join("\n") + "\n");
   await once(child, "close");
@@ -114,7 +123,7 @@ test("MCP stdio initializes and exposes only the typed hub operations", async ()
     .trim()
     .split("\n")
     .map((l) => JSON.parse(l));
-  assert.equal(responses.length, 7);
+  assert.equal(responses.length, 11);
   assert.equal(
     responses[0].result.serverInfo.version,
     versionName(),
@@ -122,7 +131,8 @@ test("MCP stdio initializes and exposes only the typed hub operations", async ()
   );
   const get = (id: number) => responses.find((r) => r.id === id);
   assert.equal(get(1).result.protocolVersion, "2025-11-25");
-  assert.ok(get(2).result.tools.some((t: any) => t.name === "answer"));
+  for (const name of ["answer", "pause", "resume", "run", "replay"])
+    assert.ok(get(2).result.tools.some((t: any) => t.name === name));
   assert.equal(get(3).result.isError, undefined);
   assert.equal(get(4).error.code, -32602);
   assert.equal(get(5).result.isError, true);
@@ -130,9 +140,25 @@ test("MCP stdio initializes and exposes only the typed hub operations", async ()
   // Calls run side by side, so they can reach the hub in any order.
   assert.deepEqual(calls.toSorted(), [
     ["/v1/events", "Bearer source-key"],
+    ["/v1/rules/%E5%B7%A1%E6%A3%80/pause", "Bearer owner-key"],
+    ["/v1/rules/%E5%B7%A1%E6%A3%80/replay", "Bearer owner-key"],
+    ["/v1/rules/%E5%B7%A1%E6%A3%80/resume", "Bearer owner-key"],
+    ["/v1/rules/%E5%B7%A1%E6%A3%80/run", "Bearer owner-key"],
     ["/v1/runs/999/why", "Bearer owner-key"],
     ["/v1/state", "Bearer owner-key"],
   ]);
+});
+
+test("status goes back a page of runs when given before", async () => {
+  const urls: string[] = [];
+  const mcp = await connect((req, res) => {
+    urls.push(req.url!);
+    res.end(JSON.stringify({ ok: true }));
+  });
+  mcp.send({ id: 2, method: "tools/call", params: { name: "status", arguments: { before: 41 } } });
+  assert.equal((await mcp.answered(2)).result.isError, undefined);
+  await mcp.close();
+  assert.deepEqual(urls, ["/v1/state?before=41"]);
 });
 
 test("U+2028 and U+2029 in a request are part of the line", async () => {

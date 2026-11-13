@@ -3,13 +3,14 @@ export type Job = {
   run: number;
   token: string;
   attempt: number;
-  rule: Pick<Rule, "name" | "cwd" | "skill" | "prompt" | "emits">;
+  rule: Pick<Rule, "name" | "cwd" | "skill" | "prompt" | "title" | "emits">;
   agent: {
     id: string;
     name: string;
     use: string;
     model?: string;
     effort?: string;
+    tier?: string;
     access: string;
     command?: string[];
     program?: string;
@@ -35,6 +36,7 @@ export type Job = {
       title: string;
       options: string[];
       choice: number | null;
+      chosen: string | null;
       text: string | null;
       about: string;
       by: string | null;

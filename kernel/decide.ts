@@ -307,18 +307,20 @@ function claimNext(draft: Draft, worker: string, claim: string) {
   const runs = rows(draft.view, "runs", { state: ["queued", "claimed"] });
   const claimed = runs.filter((run) => run.state === "claimed");
   const groupLimit = (group: string) => draft.rules.rules.find((rule) => rule.group === group)?.parallel ?? 1;
-  // What was queued before a pause, or an answer that came in during one, waits for the resume.
-  const unpaused = (name: string) => {
-    const rule = ruleNamed(draft, name);
-    return !!rule && !pauseOf(draft.view, rule, draft.now);
+  const claimable = (run: Row) => {
+    if (run.state !== "queued") return false;
+    const rule = ruleNamed(draft, run.rule);
+    // What was queued before a pause, or an answer that came in during one, waits for the resume.
+    if (!rule || !agents.includes(rule.to) || pauseOf(draft.view, rule, draft.now)) return false;
+    const agentLimit = draft.rules.agents[rule.to].maxActive;
+    return (
+      Date.parse(run.not_before) <= draft.now &&
+      !claimed.some((other) => other.grp === run.grp && other.lane === run.lane) &&
+      claimed.filter((other) => other.grp === run.grp).length < groupLimit(run.grp) &&
+      (rule.maxActive === undefined || claimed.filter((other) => other.rule === run.rule).length < rule.maxActive) &&
+      (agentLimit === undefined || claimed.filter((other) => other.agent === rule.to).length < agentLimit)
+    );
   };
-  const claimable = (run: Row) =>
-    run.state === "queued" &&
-    agents.includes(ruleNamed(draft, run.rule)?.to ?? "") &&
-    Date.parse(run.not_before) <= draft.now &&
-    unpaused(run.rule) &&
-    !claimed.some((other) => other.grp === run.grp && other.lane === run.lane) &&
-    claimed.filter((other) => other.grp === run.grp).length < groupLimit(run.grp);
   // The same claim again means the answer got lost: it gets back the run it already has.
   const held = claimed.find((run) => run.claim === claim && workerOf(draft.view, run) === worker);
   const run = held ?? runs.find(claimable);
@@ -400,7 +402,13 @@ function scheduleReview(draft: Draft, run: Row, later: Later) {
     return;
   }
   const session = draft.view.get("runs", run.id)!.session;
-  const fields = { at: iso(Date.parse(later.at!)), about: later.about, session, hops: hopsOf(draft, run) };
+  const fields = {
+    at: iso(Date.parse(later.at!)),
+    about: later.about,
+    session,
+    agent: run.agent,
+    hops: hopsOf(draft, run),
+  };
   if (existing) return void put(draft, "timers", existing.id, fields);
   const source = sourceOf(draft.view, run.id) ?? SCHEDULE;
   add(draft, "timers", { ...fields, rule, lane, key: later.key, source, event_id: null, created_at: draft.at });
@@ -515,7 +523,7 @@ function answer(draft: Draft, id: number, given: Row) {
 function nextCard(draft: Draft, channel: string) {
   const { now } = draft;
   for (const card of draft.view.deliveryCandidates(channel, now)) {
-    const reach = card.rule ? ruleNamed(draft, card.rule)?.channels : undefined;
+    const reach = (card.rule ? ruleNamed(draft, card.rule)?.channels : undefined) ?? draft.rules.defaultChannels;
     if (reach && !reach.includes(channel)) continue;
     const key = `${card.id}:${channel}`;
     const delivery = draft.view.get("deliveries", key) ?? NOT_DELIVERED;
@@ -573,7 +581,7 @@ function tick(draft: Draft) {
     const event = { id: `timer:${timer.id}`, type: "timer.due", subject: timer.lane, hops: timer.hops ?? 0 };
     const eventId = recordEvent(draft, timer.source, event, rule ? [rule.name] : []);
     put(draft, "timers", timer.id, { event_id: eventId });
-    if (rule) enqueue(draft, rule, eventId, timer.lane, timer.session);
+    if (rule) enqueue(draft, rule, eventId, timer.lane, timer.agent === rule.to ? timer.session : null);
   }
   sweep(draft);
 }
@@ -623,13 +631,37 @@ const CONTROL = {
   },
   resumeRule(draft: Draft, name: string) {
     // A rule taken out of rules.json while paused can still have its pause lifted.
-    if (!draft.view.get("pauses", name)) {
+    const pause = draft.view.get("pauses", name);
+    if (!pause) {
       knownRule(draft, name);
       return { changed: false, rule: name };
     }
     set(draft, "pauses", name, null);
     reopen(draft, name, draft.now);
-    return { changed: true, rule: name };
+    // Which pause it was: what it skipped is read from when it began, and once it's gone nothing else says when.
+    return { changed: true, rule: name, paused: pauseView(pause) };
+  },
+  /** Events a pause kept from the rule, taken by it now as they would have been then: each once, never while paused. */
+  replayRule(draft: Draft, name: string, events: number[]) {
+    const rule = knownRule(draft, name);
+    if (!eventRule(rule))
+      throw new InputError(`「${name}」是定时规则，暂停时到点不跑、不记事件，没有可补跑的；要补一轮用 run`);
+    if (pauseOf(draft.view, rule, draft.now)) throw new Conflict(`规则「${name}」暂停中，先恢复再补跑`);
+    // An event stays as it came, still saying which pauses skipped it. What says it's been made up is a run of this rule
+    // holding it, and a link once made only ever moves to another run of the same rule and matter.
+    const taken = (id: number) =>
+      rows(draft.view, "run_events", { event_id: id }).some(
+        (link) => draft.view.get("runs", link.run_id)?.rule === name,
+      );
+    const replayed: number[] = [];
+    const runs = new Set<number>();
+    for (const id of [...events].sort((a, b) => a - b)) {
+      const event = draft.view.get("events", id);
+      if (!event || !JSON.parse(event.paused ?? "[]").includes(name) || taken(id)) continue;
+      runs.add(enqueue(draft, rule, id, rule.parallel ? event.subject : ""));
+      replayed.push(id);
+    }
+    return { events: replayed, runs: [...runs] };
   },
   /** One run now, through the usual queue, from an event of its own that says the owner asked for it. */
   runRule(draft: Draft, name: string, by: string, given: Row) {

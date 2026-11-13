@@ -123,7 +123,8 @@ export function cardView(card: Row, env: Environment, ref: string | null = null,
 
 export function jobOf(view: View, run: Row, env: Environment): Job {
   const rules = configuration(view, run.rules_version);
-  const { name, cwd, skill, prompt, emits } = ruleOf(rules, run.rule)!;
+  const { name, cwd, skill, prompt, title, emits } = ruleOf(rules, run.rule)!;
+  const { maxActive: _maxActive, ...agent } = rules.agents[run.agent];
   const events = eventsOf(view, run.id);
   const eventIds = events.map((event) => event.id);
   const thread = { rule: run.rule, lane: run.lane };
@@ -139,8 +140,8 @@ export function jobOf(view: View, run: Row, env: Environment): Job {
     run: run.id,
     token: credential(env, "run", run.id, run.issued),
     attempt: run.attempts + 1,
-    rule: { name, cwd, skill, prompt, emits },
-    agent: { ...rules.agents[run.agent], id: run.agent },
+    rule: { name, cwd, skill, prompt, title, emits },
+    agent: { ...agent, id: run.agent },
     session: run.session ?? run.resume,
     askFirst: rules.askFirst,
     context: {
@@ -149,7 +150,18 @@ export function jobOf(view: View, run: Row, env: Environment): Job {
         return { id, source, sourceName, type, subject, summary, detail, link, receivedAt, hops: hops ?? 0 };
       }),
       answers: answers.map(({ id: card, title, options, choice, answer: text, about, by, decided_at: at }) => {
-        return { card, title, options: JSON.parse(options), choice, text, about, by, at };
+        const picked: string[] = JSON.parse(options);
+        return {
+          card,
+          title,
+          options: picked,
+          choice,
+          chosen: choice === null ? text : picked[choice],
+          text,
+          about,
+          by,
+          at,
+        };
       }),
       timers: timers.map(timerView),
       waiting: waiting.sort((a, b) => a.at.localeCompare(b.at)).map(timerView),

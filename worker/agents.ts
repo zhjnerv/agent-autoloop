@@ -4,7 +4,6 @@
 // rules.json.
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import path from "node:path";
 import { findOnPath } from "../host/command.ts";
 import { loadPlugin } from "../host/plugins.ts";
 import type { Usage } from "../protocol/validate.ts";
@@ -19,6 +18,8 @@ export type Turn = {
   cwd: string;
   model?: string;
   effort?: string;
+  /** The service tier to run at, in the agent program's own words; plugins whose program has none ignore it. */
+  tier?: string;
   access: Access;
   command?: string[];
   /** The program a built-in plugin starts instead of the one it finds: a wrapper that sets things up and runs it. */

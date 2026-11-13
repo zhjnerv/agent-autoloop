@@ -2,7 +2,7 @@
 // it stops.
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { HOME } from "./home.ts";
@@ -53,9 +53,9 @@ export const startupInstead = () =>
   startupShortcut();
 
 function installWindowsService() {
-  removeService();
-  stopUp();
   const { program, args, directory } = windowsLauncher();
+  // Registering with -Force replaces the task in place, so the old one and the hub it runs are left alone until Windows
+  // has taken the new one: a registration it refuses must not leave the person with no hub.
   try {
     powershell(`
     $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -64,13 +64,16 @@ function installWindowsService() {
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
     Register-ScheduledTask -TaskName ${psQuote(label())} -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-    Start-ScheduledTask -TaskName ${psQuote(label())}
   `);
   } catch (error) {
     // The built-in Administrator with UAC on can't make any task without elevating, however the task is written.
     if (!String((error as { stderr?: string }).stderr ?? error).includes("0x80070005")) throw error;
     throw new Error(`Windows 不让这个账号建登录任务（拒绝访问）。${startupInstead()}`);
   }
+  // Stopping the task ends wscript, not the hub it started; that one, or one started by hand, is stopped after it.
+  powershell(`$task = ${task()}; if ($task.State -eq 'Running') { $task | Stop-ScheduledTask }`);
+  stopUp();
+  powershell(`Start-ScheduledTask -TaskName ${psQuote(label())}`);
 }
 
 /**
@@ -181,6 +184,9 @@ export function installService() {
   if (process.platform === "darwin") {
     mkdirSync(path.dirname(plistFile()), { recursive: true });
     writeFileSync(plistFile(), plist());
+    // launchd refuses to load a plist others can write, as an unhelpful "Bootstrap failed: 5"; and rewriting one a
+    // umask-0 install left world-writable keeps its mode, so the mode is set on every install.
+    chmodSync(plistFile(), 0o644);
     spawnSync("launchctl", ["bootout", `${domain()}/${label()}`], { stdio: "ignore" });
     // bootout returns before the old one is gone; loading before that fails and leaves none.
     for (let tries = 0; tries < 100 && launchdHasIt(); tries++) pause(100);
