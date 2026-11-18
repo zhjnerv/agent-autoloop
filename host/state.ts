@@ -36,9 +36,17 @@ const ONLINE = 120_000 + SEEN_EVERY;
 const PAGE = 60;
 const WEEK = 7 * 86400_000;
 
-export type Spending = { rounds: number; tokens: number; cost: number; missingTokens: number; missingCost: number };
+export type Spending = {
+  rounds: number;
+  tokens: number;
+  cached: number;
+  cost: number;
+  missingTokens: number;
+  missingCost: number;
+};
 const SPENDING = `SELECT COUNT(*) AS rounds,
   COALESCE(SUM(COALESCE(json_extract(usage, '$.input'), 0) + COALESCE(json_extract(usage, '$.output'), 0)), 0) AS tokens,
+  COALESCE(SUM(json_extract(usage, '$.cached')), 0) AS cached,
   COALESCE(SUM(json_extract(usage, '$.cost')), 0) AS cost,
   COUNT(*) - COUNT(COALESCE(json_extract(usage, '$.input'), json_extract(usage, '$.output'))) AS missingTokens,
   COUNT(*) - COUNT(json_extract(usage, '$.cost')) AS missingCost
@@ -125,6 +133,12 @@ export function stateOf(now: number, before: number | undefined, rules: Rules, {
   };
   const counts = all<Row>(COUNTS, [iso(dayStart(now, rules.timezone))]);
   const openCards = all<Row>("SELECT * FROM cards WHERE state = 'open' ORDER BY id DESC");
+  const lastDeliveries = new Map(
+    all<Row>(
+      "SELECT channel, card_id, tries, error, given_up FROM deliveries " +
+        "WHERE (channel, card_id) IN (SELECT channel, MAX(card_id) FROM deliveries GROUP BY channel)",
+    ).map((row) => [row.channel as string, row]),
+  );
   const recentCards = all<Row>("SELECT * FROM cards WHERE state <> 'open' ORDER BY id DESC LIMIT 20");
   const timers = before
     ? []
@@ -184,15 +198,28 @@ export function stateOf(now: number, before: number | undefined, rules: Rules, {
     })),
     pauses,
     skipped: all<Row>(SKIPPED).map(skippedView),
-    elsewhere: rules.elsewhere.map(({ name, source, to, cron, where }) => {
+    elsewhere: rules.elsewhere.map(({ name, source, to, cron, where, model, effort }) => {
       const next = iso(nextRun(parseCron(cron)!, now, rules.timezone) ?? now);
-      return { id: name, name, source, agent: to, cron, every: describeCron(cron), next, where };
+      const shown = { id: name, name, source, agent: to, cron, every: describeCron(cron), next, where };
+      return { ...shown, ...(model && { model }), ...(effort && { effort }) };
     }),
     agents: Object.entries(rules.agents).map(([id, { name, use, worker, program }]) => {
       const totals = tally(counts.filter((row) => row.agent === id));
       return { id, name, use, worker, ...(program && { program }), ...presence(`worker:${worker}`), totals };
     }),
-    channels: Object.entries(rules.channels).map(([id, { name }]) => ({ id, name, ...presence(`channel:${id}`) })),
+    channels: Object.entries(rules.channels).map(([id, { name }]) => {
+      // Coming back says the channel's program runs, not that a card got through: the last one it was given says that.
+      const last = lastDeliveries.get(id);
+      const lastFailure = last?.error
+        ? {
+            card: last.card_id as number,
+            tries: last.tries as number,
+            error: last.error as string,
+            givenUp: !!last.given_up,
+          }
+        : undefined;
+      return { id, name, ...presence(`channel:${id}`), ...(lastFailure && { lastFailure }) };
+    }),
     runs: visible.map((run) => ({
       id: run.id as number,
       rule: run.rule,

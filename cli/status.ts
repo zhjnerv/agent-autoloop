@@ -213,6 +213,7 @@ export function render(state: any, { color, columns }: { color: boolean; columns
   for (const card of state.cards) {
     const label = card.kind === "ask" ? bold(yellow("决定")) : bold(magenta("留意"));
     say(`  ${label} ${dim(`#${card.id}`)} ${bold(card.title)}`);
+    if (card.rule && card.rule !== card.title) say(dim(`${INDENT}来源：${card.rule}`));
     for (const paragraph of (card.text ?? "").split(/\n\s*\n/).filter((one: string) => one.trim())) {
       for (const line of wrap(unlinked(paragraph), room - INDENT.length)) say(INDENT + line);
       for (const [, words, url] of paragraph.matchAll(LINK)) say(`${INDENT}${underline(words)} ${dim(url)}`);

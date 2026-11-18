@@ -41,6 +41,7 @@ export type Job = {
       about: string;
       by: string | null;
       at: string;
+      events: string[];
     }[];
     timers: { key: string; about: string; at: string }[];
     waiting: { key: string; about: string; at: string }[];

@@ -66,7 +66,7 @@ Agent 结束了这一轮，问了你一个问题。它现在不占进程、不�
 1. **新事件进来。** 早上 9 点的定时任务、GitHub 上新提的 Issue、业务系统报的错，都变成一条标准事件送进内核。
 2. **按规则派活。** 内核照你写的规则，决定交给哪个 Agent、去哪个目录干。同一件事排队时又来的消息，会合并成一轮处理。
 3. **干完一轮就退出。** Agent 把结果写在最后一条回复里，进程直接退出。
-4. **拿不准才问你。** 碰到删数据、重启服务、花钱、对外发消息这类事，内核通过飞书或桌面通知发一张卡片给你。等你回复期间，它不占后台进程，也不消耗 Token。
+4. **拿不准才问你。** 碰到删数据、停服、花钱、对外发消息这类事，内核通过飞书或桌面通知发一张卡片给你。等你回复期间，它不占后台进程，也不消耗 Token。
 5. **点一下，接着干。** 你选完，它接上原来的对话，把剩下的活干完。
 
 能自己搞定的事走图上方的自动闭环：直接办完，或者约个时间（比如半小时后）再醒来复查，全程不打扰你。
@@ -174,7 +174,7 @@ Agent 结束了这一轮，问了你一个问题。它现在不占进程、不�
 
 OpenClaw 的 `agent exec` 每次默认最多跑 600 秒，到点就算失败；要跑更久的，在命令里加 `--timeout <秒>`（`0` 不限时）。
 
-会说 ACP 的 Agent 用 `use: "acp"` 接，还能接着原来的会话做：[Gemini CLI](https://geminicli.com/docs/cli/acp-mode/) 写 `"command": ["gemini", "--acp"]`，[OpenCode](https://opencode.ai/docs/acp) 写 `"command": ["opencode", "acp"]`。这两条已经跑通了 ACP 握手（Gemini CLI 0.67.0、OpenCode 1.1.2），多轮问答和会话续接还没跑过。
+会说 ACP 的 Agent 用 `use: "acp"` 接，还能接着原来的会话做：[Gemini CLI](https://geminicli.com/docs/cli/acp-mode/) 写 `"command": ["gemini", "--acp"]`，[OpenCode](https://opencode.ai/docs/acp) 写 `"command": ["opencode", "acp"]`，Antigravity 写 `"command": ["agy", "acp"]`。Gemini CLI 0.67.0 和 OpenCode 1.1.2 已经跑通 ACP 握手，多轮问答和会话续接还没跑过。Antigravity（agy 1.5.5）在 Windows 上跑通了多轮问答和会话续接。
 
 **交付流水线。** 配好交付规则后，给 GitHub PR 打上 `deliver` 标签后，它会自己跟进到上线：**审代码 → 等 CI → 合并 PR → 等部署 → 核对线上版本**。审查可以按写代码的 Agent 指定，也可以让多个项目共用一份策略。审查和交付配置只从 `main` 读取，绝不在接单电脑上检出或运行 PR 里的代码；排队、并发和重试直接复用内核。
 

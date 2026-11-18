@@ -2,7 +2,8 @@
 // Agent reading the output, or show up despite NO_COLOR; a Chinese, Japanese or Korean character is counted as one column,
 // so columns after it drift and lines wrap past the edge; what waits for the owner sinks below what only reports; a
 // notice dealt with spreads its whole text over the list, or loses it, though that's the only place what `tell` said is read.
-// A paused rule doesn't say how many events it has let go by since when, which ones, or that there are more than it lists.
+// A paused rule doesn't say how many events it has let go by since when, which ones, or that there are more than it lists,
+// or prints one of them wider than the terminal.
 // The replay command it prints, copied as it is, runs something else: a rule name with $ or a backquote expands, one
 // starting with # turns the rest of the line into a comment.
 import assert from "node:assert/strict";
@@ -29,8 +30,8 @@ const state = {
   now,
   timezone: "Asia/Shanghai",
   spending: {
-    today: { rounds: 0, tokens: 0, cost: 0, missingTokens: 0, missingCost: 0 },
-    week: { rounds: 0, tokens: 0, cost: 0, missingTokens: 0, missingCost: 0 },
+    today: { rounds: 0, tokens: 0, cached: 0, cost: 0, missingTokens: 0, missingCost: 0 },
+    week: { rounds: 0, tokens: 0, cached: 0, cost: 0, missingTokens: 0, missingCost: 0 },
   },
   totals: { running: 1, queued: 0, retrying: 0, unknown: 0, doneToday: 1 },
   agents: [{ name: "Claude", worker: "m4", online: false, seenAt: "2026-11-06T13:00:00.000Z" }],
@@ -152,6 +153,25 @@ test("a paused rule says since when, how many events it has skipped, the latest 
   );
   assert.match(section, /共 7 条，这里列出最近 5 条/);
   assert.match(section, /早报：放假\n {4}08:00 起$/);
+  // A skipped event's line keeps to the width too, cut with "…": its summary can be longer than the terminal.
+  const wide = render(
+    {
+      ...state,
+      lines: [
+        {
+          ...lines[0],
+          paused: {
+            ...lines[0].paused,
+            skipped: { count: 1, events: [{ ...event(7), summary: "很长的一句话".repeat(12) }] },
+          },
+        },
+      ],
+    },
+    { color: false, columns: 100 },
+  );
+  const shown = wide.split("\n").find((one) => one.includes("feedback.new"))!;
+  assert.ok(width(shown) <= 100, shown);
+  assert.match(shown, /…$/);
 });
 
 const since = "2026-11-11T14:07:53.620Z";

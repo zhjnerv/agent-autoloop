@@ -83,6 +83,10 @@ export function render(card: Card) {
     config: { update_multi: true, enable_forward: false },
     header: {
       title: { tag: "plain_text", content: card.title },
+      // Which rule or task it came from, in every state: cards from many places reach one person.
+      ...(card.rule && card.rule !== card.title
+        ? { subtitle: { tag: "plain_text", content: `来源：${card.rule}` } }
+        : {}),
       template: card.state === "open" ? "blue" : card.state === "closed" ? "grey" : "green",
     },
     body: {
@@ -98,14 +102,14 @@ export function render(card: Card) {
 
 export default async function feishu({ hub, options, log, signal }: ChannelContext) {
   const program = (options.lark as string | undefined) ?? "lark-cli";
-  const lark = async (args: string[], input: string) => {
+  const lark = async (args: string[], input?: string) => {
     const printed = await new Promise<string>((resolve, reject) => {
       const child = execFile(
         ...commandLine([program, ...args]),
         { encoding: "utf8", timeout: 60_000, signal },
         (error, stdout) => (error ? reject(error) : resolve(stdout)),
       );
-      child.stdin!.on("error", reject);
+      child.stdin!.on("error", input === undefined ? () => {} : reject);
       child.stdin!.end(input);
     });
     const out = JSON.parse(printed);
@@ -124,8 +128,7 @@ export default async function feishu({ hub, options, log, signal }: ChannelConte
   async function sendMessage(key: string, content: string) {
     const target = ["--user-id", owner, "--as", "bot", "--msg-type", "interactive"];
     const once = ["--idempotency-key", key];
-    return (await lark(["im", "+messages-send", ...target, ...once, "--content", "-"], content)).data
-      .message_id as string;
+    return (await lark(["im", "+messages-send", ...target, ...once, "--content", content])).data.message_id as string;
   }
 
   async function deliver() {

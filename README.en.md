@@ -68,7 +68,7 @@ The numbers match the diagram above:
 1. **An event comes in.** A 9:00 AM schedule, a new GitHub issue, or a production alert becomes a standard event sent to the kernel.
 2. **Dispatched by your rules.** Your rules decide which agent handles it and in which folder. New events for the same subject while it is queued merge into one round.
 3. **Work one round and exit.** The agent puts its result in its final message, and the process exits.
-4. **Asks only when needed.** For sensitive actions like deleting data, restarting a service, spending money, or messaging people, the kernel sends you a card through Feishu or a desktop notification. While you take your time, no agent process runs and no tokens are spent.
+4. **Asks only when needed.** For sensitive actions like deleting data, taking a service down, spending money, or messaging people, the kernel sends you a card through Feishu or a desktop notification. While you take your time, no agent process runs and no tokens are spent.
 5. **One tap resumes it.** Your answer picks up the original conversation and finishes the job.
 
 Anything the agent can handle alone takes the auto-loop at the top of the diagram: finish outright, or schedule a follow-up check (say, in 30 minutes) without bothering you.
@@ -176,7 +176,7 @@ Built-in plugins ship with the program and are enabled through configuration. Us
 
 OpenClaw's `agent exec` stops each run after 600 seconds by default, and that counts as a failure; for longer work add `--timeout <seconds>` to the command (`0` means no limit).
 
-Agents that speak ACP connect with `use: "acp"` and can go on in the same session: [Gemini CLI](https://geminicli.com/docs/cli/acp-mode/) is `"command": ["gemini", "--acp"]`, and [OpenCode](https://opencode.ai/docs/acp) is `"command": ["opencode", "acp"]`. Both answered the ACP handshake (Gemini CLI 0.67.0, OpenCode 1.1.2); multi-turn Q&A and session resumption have not been run yet.
+Agents that speak ACP connect with `use: "acp"` and can go on in the same session: [Gemini CLI](https://geminicli.com/docs/cli/acp-mode/) is `"command": ["gemini", "--acp"]`, [OpenCode](https://opencode.ai/docs/acp) is `"command": ["opencode", "acp"]`, and Antigravity is `"command": ["agy", "acp"]`. Gemini CLI 0.67.0 and OpenCode 1.1.2 answered the ACP handshake; multi-turn Q&A and session resumption have not been run yet. Antigravity (agy 1.5.5) has run both on Windows.
 
 **Delivery pipeline.** Once delivery rules are configured, the `deliver` label takes a GitHub PR through review, CI, merge, deployment, and live-version verification. Projects can choose reviewers per authoring agent or share a policy. Delivery reads trusted settings from main and reviews a read-only snapshot on the worker.
 

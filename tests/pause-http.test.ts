@@ -3,7 +3,9 @@
 // paused rule is accepted; the state doesn't show who paused what, why and until when; a task that runs elsewhere, even one that can ask and go on in its cwd, is paused or run as if it were a rule; the
 // command line doesn't reach these doors or says nothing useful. What a pause skipped isn't counted while it lasts, isn't
 // listed in full when it's lifted, takes in what an earlier pause skipped, or can't be replayed in one go after the lift;
+// its count and the events it lists disagree once more were skipped than it lists;
 // the command line doesn't say a pause holds nothing back for later, or leaves the owner to find the skipped events.
+// The state leaves out the model a task elsewhere was registered with, or makes one up for a task that named none.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -15,7 +17,14 @@ import { setup, beforeCleanup } from "./helpers.ts";
 const home = setup("pause-http");
 const rulesFile = join(home, "rules.json");
 const fixture = JSON.parse(readFileSync(process.env.AGENT_AUTOLOOP_RULES!, "utf8"));
-fixture.elsewhere.push({ ...fixture.elsewhere[0], name: "会问的清理", cwd: "/tmp", prompt: "接着清理。" });
+fixture.elsewhere.push({
+  ...fixture.elsewhere[0],
+  name: "会问的清理",
+  cwd: "/tmp",
+  prompt: "接着清理。",
+  model: "some-model",
+  effort: "high",
+});
 writeFileSync(rulesFile, JSON.stringify(fixture));
 process.env.AGENT_AUTOLOOP_RULES = rulesFile;
 const { serve } = await import("../host/http.ts");
@@ -48,6 +57,14 @@ async function post(path: string, body?: unknown, key = owner) {
   return { status: response.status, json: await response.json() };
 }
 const state = async () => (await fetch(`${base}/v1/state`, { headers: { authorization: `Bearer ${owner}` } })).json();
+test("a task elsewhere shows the model and effort it was registered with, and none when it named none", async () => {
+  const { elsewhere } = await state();
+  const named = elsewhere.find((task: any) => task.name === "会问的清理");
+  assert.deepEqual([named.model, named.effort], ["some-model", "high"]);
+  const plain = elsewhere.find((task: any) => task.name !== "会问的清理");
+  assert.deepEqual(["model" in plain, "effort" in plain], [false, false]);
+});
+
 const lineOf = async (name: string) => (await state()).lines.find((line: { name: string }) => line.name === name);
 const rule = (name: string, action: string) => `/v1/rules/${encodeURIComponent(name)}/${action}`;
 const send = async (id: string, subject: string) =>
@@ -116,6 +133,18 @@ test("what a pause skips is counted while it lasts, listed when it's lifted, and
     (await state()).skipped.some((e: any) => e.id === earlier),
     "what the earlier pause skipped stays as it was",
   );
+  // More were skipped than the state lists at a time: the count still says how many, the list keeps the newest.
+  await post(rule("意见", "pause"), { reason: "又来一批" });
+  const many: number[] = [];
+  for (let n = 0; n < 21; n++) many.push(await send(`m${n}`, `#m${n}`));
+  const capped = (await lineOf("意见")).paused.skipped;
+  assert.equal(capped.count, 21, "the count says how many the pause skipped");
+  assert.deepEqual(
+    capped.events.map((e: any) => e.id),
+    many.slice().reverse().slice(0, 20),
+  );
+  assert.equal(capped.events.length, 20, "the list keeps to the newest 20");
+  await post(rule("意见", "resume"));
   const schedule = await post(rule("巡检", "pause"), {});
   assert.equal(schedule.json.paused.skipped, null, "a schedule skips moments, not events");
   await post(rule("巡检", "resume"));

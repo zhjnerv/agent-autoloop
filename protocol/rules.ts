@@ -202,6 +202,8 @@ export function parseRules(json: string, now: number, timezone: string): Rules {
       ["to", isKeyOf(rules.agents), "不是已登记的 Agent"],
       ["cron", isCron, "不是有效的 cron"],
       ["where", isText, NOT_EMPTY],
+      ["model", isText, NOT_EMPTY, true],
+      ["effort", isText, NOT_EMPTY, true],
       ["cwd", isFolder, FOLDER, true],
       ["skill", isText, NOT_EMPTY, true],
       ["prompt", isText, NOT_EMPTY, true],

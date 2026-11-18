@@ -908,9 +908,15 @@
         },
         "at": {
           "type": "string"
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
-      "required": ["card", "title", "options", "choice", "chosen", "text", "about", "by", "at"],
+      "required": ["card", "title", "options", "choice", "chosen", "text", "about", "by", "at", "events"],
       "additionalProperties": true
     },
     "context-timer": {

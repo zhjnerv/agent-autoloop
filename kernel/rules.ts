@@ -37,6 +37,9 @@ export type Elsewhere = RuleWords & {
   to: string;
   cron: string;
   where: string;
+  /** What its app runs it on, only to be shown: the hub starts nothing with them. */
+  model?: string;
+  effort?: string;
   cwd?: string;
 };
 type Registered = { sources: Record<string, Source>; agents: Record<string, Agent>; channels: Record<string, Channel> };
